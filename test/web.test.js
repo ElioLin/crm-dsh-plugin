@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
 import test from 'node:test';
 
-import { createDispatchTable, isTrustedRequest, mountApiRoutes, writeJson } from '../lib/web.js';
+import { createDispatchTable, isTrustedRequest, mountApiRoutes, mountAssetRoutes, writeJson } from '../lib/web.js';
 
 function req({ host = '127.0.0.1:53312', method = 'POST', headers = {}, body } = {}) {
   const all = { host, 'content-type': 'application/json', ...headers };
@@ -64,12 +64,56 @@ test('方法白名单只包含登记过的接口', () => {
     'activation.state',
     'bootstrap',
     'preview.injection',
+    'registry.list',
+    'scenario.attachment.save',
     'scenario.delete',
     'scenario.duplicate',
     'scenario.enable',
+    'scenario.export',
+    'scenario.fork',
+    'scenario.import',
+    'scenario.install',
     'scenario.move',
+    'scenario.permission',
+    'scenario.publish',
     'scenario.save',
+    'scenario.sync',
     'skills.list',
+  ]);
+});
+
+test('权限 / 同步 / 复制副本接口转发到业务方法', async () => {
+  const calls = [];
+  const api = {
+    async getPermission(params) {
+      calls.push(['permission', params]);
+      return { ok: true, auth: { canManageStandardScenario: true } };
+    },
+    async syncCompanyScenarios() {
+      calls.push(['sync', {}]);
+      return { ok: true, scenarios: [] };
+    },
+    async forkStandardToLocalScenario(params) {
+      calls.push(['fork', params]);
+      return { ok: true, card: { scenarioId: 'copy-1' } };
+    },
+    async exportScenarioBundle(params) {
+      calls.push(['export', params]);
+      return { ok: true, package: {} };
+    },
+  };
+  const table = createDispatchTable(api);
+  const permission = await table.get('scenario.permission')(api, { refresh: true });
+  assert.equal(permission.ok, true);
+  await table.get('scenario.sync')(api, {});
+  const forked = await table.get('scenario.fork')(api, { scenarioId: 'crm_std_visit' });
+  assert.equal(forked.card.scenarioId, 'copy-1');
+  await table.get('scenario.export')(api, { scenarioId: 'crm_std_visit', source: 'company' });
+  assert.deepEqual(calls, [
+    ['permission', { refresh: true }],
+    ['sync', {}],
+    ['fork', { scenarioId: 'crm_std_visit' }],
+    ['export', { scenarioId: 'crm_std_visit', source: 'company' }],
   ]);
 });
 
@@ -187,4 +231,99 @@ test('disposer 可重复调用不会抛错', () => {
   const { dispose } = mount({ bootstrap: async () => ({}) });
   dispose();
   assert.doesNotThrow(() => dispose());
+});
+
+/* ── 预设附件只读路由 ─────────────────────────────────────────── */
+
+function assetReq(url, { method = 'GET', host = '127.0.0.1:53312', headers = {} } = {}) {
+  const stream = Readable.from([]);
+  stream.method = method;
+  stream.url = url;
+  stream.headers = { host, ...headers };
+  return stream;
+}
+
+function mountAssets(assets, options = {}) {
+  const state = { handler: undefined };
+  const wctx = {
+    webServer: {
+      register(definition) {
+        state.handler = definition.handler;
+        state.path = definition.path;
+        return () => {
+          state.disposed = true;
+        };
+      },
+    },
+  };
+  const dispose = mountAssetRoutes(wctx, assets, options);
+  return { handler: state.handler, path: state.path, dispose, state };
+}
+
+test('附件路由：GET 返回字节与缓存头，HEAD 只回头', async () => {
+  const reads = [];
+  const assets = {
+    async read(name) {
+      reads.push(name);
+      return { buffer: Buffer.from('DOCX-BYTES'), mimeType: 'application/octet-stream' };
+    },
+  };
+  const { handler, path } = mountAssets(assets);
+  assert.equal(path, '/crm-workspace/asset');
+
+  const got = res();
+  await handler(assetReq('/crm-workspace/asset/att_tpl.docx'), got);
+  assert.equal(got.captured.status, 200);
+  assert.equal(String(got.captured.body), 'DOCX-BYTES');
+  assert.equal(got.captured.headers['cache-control'], 'private, max-age=300');
+  assert.equal(got.captured.headers['x-content-type-options'], 'nosniff');
+  assert.match(got.captured.headers['content-disposition'], /^inline; filename\*=UTF-8''att_tpl\.docx$/);
+  assert.deepEqual(reads, ['att_tpl.docx']);
+
+  const head = res();
+  await handler(assetReq('/crm-workspace/asset/att_tpl.docx', { method: 'HEAD' }), head);
+  assert.equal(head.captured.status, 200);
+  assert.equal(head.captured.body, undefined);
+});
+
+test('附件路由：只接受单段文件名，越界与缺失一律 404', async () => {
+  const assets = {
+    async read() {
+      throw new Error('ENOENT');
+    },
+  };
+  const { handler } = mountAssets(assets);
+
+  for (const url of [
+    '/crm-workspace/asset/',
+    '/crm-workspace/asset/..%2Fstate.json',
+    '/crm-workspace/asset/a%5Cb.docx',
+    '/crm-workspace/asset/missing.docx',
+  ]) {
+    const response = res();
+    await handler(assetReq(url), response);
+    assert.equal(response.captured.status, 404, url);
+    assert.equal(JSON.parse(String(response.captured.body)).ok, false);
+  }
+});
+
+test('附件路由：非 GET/HEAD 405，非回环来源 403 且不读文件', async () => {
+  let reads = 0;
+  const assets = {
+    async read() {
+      reads += 1;
+      return { buffer: Buffer.from('x') };
+    },
+  };
+  const { handler } = mountAssets(assets);
+
+  const notAllowed = res();
+  await handler(assetReq('/crm-workspace/asset/a.docx', { method: 'POST' }), notAllowed);
+  assert.equal(notAllowed.captured.status, 405);
+  assert.equal(notAllowed.captured.headers.allow, 'GET, HEAD');
+
+  const forbidden = res();
+  await handler(assetReq('/crm-workspace/asset/a.docx', { host: 'evil.example.com' }), forbidden);
+  assert.equal(forbidden.captured.status, 403);
+  assert.equal(reads, 0);
 });

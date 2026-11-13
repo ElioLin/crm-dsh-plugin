@@ -1,5 +1,81 @@
 # 变更记录
 
+## 1.4.0
+
+对接已上线的 MCP 控制平面服务（`http://crmmcptest.runner-corp.com.cn:9000`），把「公司标准场景」从轻量 JSON 仓库升级为完整的 8 接口协同：权限联动、自动升级、只读保护与本地副本。
+
+### 新增
+
+- **MCP 控制平面客户端**：`lib/core/registry.js` 按 `/api/dsh/**` 契约实现 `GET /scenarios?includeDeleted=true`、`GET /scenarios/permission`、`POST/PUT/DELETE /scenarios/{id}`、`POST/DELETE /scenarios/{id}/attachments[/{attachmentId}]` 与二进制下载；统一处理 Buntu Token 双头、`internal_bearer` 身份、超时、`correlationId` 与 `sha256` 响应头。
+- **严格双向映射**：`fromRemoteScenario` 展平「主字段 + `scenarioPayload`」并把相对 `downloadUrl` 用 `new URL(downloadUrl, apiBaseUrl)` 拼成完整地址；`toRemoteWritePayload` 统一生成 POST/PUT 请求体，并在顶层与 `scenarioPayload` 内强制剔除 `version`、`revision`、`createdAt`、`updatedAt`、`presetAttachments`，避免 `400 DSH_SCENARIO_INPUT_INVALID`。
+- **权限联动**：抽屉打开前调用 `GET /api/dsh/scenarios/permission`，仅 `auth.canManageStandardScenario === true` 显示「☑️ 设为插件标准场景」并允许编辑/删除标准场景；普通用户只看到「进入场景 / 复制为本地场景 / 下载到本地」。
+- **自动静默升级**：每次同步后扫描 `sourceType === "COMPANY_STANDARD"` 的已安装场景，按 `revision/version` 覆盖更新；附件按 `sha256` 增量下载/校验/清理；`deletedScenarioIds` 或远端消失时自动卸载并清理本地缓存。
+- **复制为本地场景**：`scenario.fork` 深拷贝标准场景与预设附件，生成 `${scenarioId}-copy-${timestamp}`、标题 ` (本地副本)`、`sourceType: "LOCAL_CUSTOM"` 的可编辑副本。
+- **新会话 3 项带入强化**：输入框上方显示 `🟢 正在使用场景：【标题】 (v版本)` 与绑定 Skill；自动填入 `inputDraft || welcomeMessage`；预设附件以 `SCENARIO_PRESET` 角色挂进待发送托盘。
+- 新增配置：`apiBaseUrl`（默认 `http://crmmcptest.runner-corp.com.cn:9000`）、`authMode`、`buntuToken`、`mcpClientToken`、`platformUserId`。
+
+### 变更
+
+- `sourceType` 本地值由 `LOCAL_INSTALLED` 迁移为 `LOCAL_CUSTOM`；旧存档自动兼容。`STATE_VERSION` 升到 2，存档新增 `companyStandardScenarios`、`deletedScenarioIds`、`lastSyncedAt`。
+- `bootstrap` 新增 `auth`、`installedScenarios`、`companyStandardScenarios`；「公司推出的场景」只展示远端 `PUBLISHED`，同步不会自动把新场景塞进「已安装」。
+- 服务端字段限制对齐：标题 128、分类 64、介绍 4000、预设附件 20 个、单文件 10 MiB、`scenarioId` 正则 `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` 且禁止保留字 `permission`。
+- 场景包导出改为 `<scenarioId>.crm-scenario.json`，附件内联 Base64 并附带 `sha256`。
+
+### 验证
+
+- `node --test`：115 个用例全部通过（新增默认地址/身份头/8 接口契约/请求体红线/权限/自动升级/复制副本/新会话契约等用例）。
+- `node scripts/check.mjs`：7 组自检通过。
+
+## 1.3.1
+
+修掉 1.3.0 上线后暴露的四个问题：预设附件「传了不显示」、创建人可随意改、界面被翻成英文、进入场景没有预填输入框。
+
+### 修复
+
+- **预设附件上传后仍显示「尚未上传预设附件」**：`EditorDialog` 原来把整批文件放在同一个 `try` 里，只要有一个文件失败（类型不支持、超限、网络错误），`patch` 就不执行，已成功的附件也被丢弃。现在改为逐个上传：成功的立刻进列表，失败的逐条提示，互不影响；状态用函数式更新，连续两次上传不会互相覆盖。
+- **附件数量与移除**：上限由 20 收到 **10**（`LIMITS.presetAttachments`），界面显示「已上传 N / 10」，达到上限后禁用上传按钮，每条附件都有移除按钮；多选时超出上限的部分会提示被忽略。
+- **创建人可被改写**：抽屉里的「创建人」改成只读（`readOnly` + `disabled`），新建场景时由 `bootstrap.plugin.currentUser` 自动带出；Host 侧保存时也会补默认值，前端无法伪造。取值顺序：`defaultAuthor` 配置 → 宿主 `deepseekAccount` 资料显示名 → 进程用户名，结果缓存 5 分钟并带 1.5s 超时。
+- **界面被翻成英文**：`installLocale` 会把中文原文注册成 en 词典并绑定宿主 locale，宿主语言为 en 时整屏变英文。现在插件界面固定中文：不再注册语言包、不绑定 locale，`t()` 退化为恒等函数。
+- **进入场景不预填输入框、不带预设附件**：`conversation.input.dock` 的 owner props 是 `{ session, input }`，没有 `sessionId` 字段，徽标组件读到空串后直接返回 `null`，联动逻辑整段没执行。现在从 `props.session.sessionId` 兜底取值；预填与附件带入改为「最多重试 20 次、每次间隔 800ms」，会话/输入框尚未就绪时也能最终生效，且仍然不覆盖用户已经输入的草稿。
+
+### 变更
+
+- `bootstrap` 新增 `plugin.currentUser`；`bootstrap.scenarios[].presetAttachments[]` 补上可 GET 的 `url`（存档里不写该字段）。
+- 新增配置项 `defaultAuthor`（创建人兜底值）。
+- 版本号升到 `1.3.1`。
+
+### 验证
+
+- `node --test`：93 个用例全部通过（新增「创建人由宿主带出」「bootstrap 附件补 url 且不落盘」等用例）。
+- `node scripts/check.mjs`：6 组自检通过。
+
+## 1.3.0
+
+把工作台从「本地场景列表」升级成「场景中心」：双页签（我的 / 公司标准）、场景预设附件、新会话输入框联动，以及轻量远端场景库同步。
+
+### 新增
+
+- **场景 Schema**：`inputDraft`（输入框预填草稿，留空回落 `welcomeMessage`）、`presetAttachments[]`（`attachmentId/fileName/mimeType/localPathOrUrl/fileSize/role='SCENARIO_PRESET'`）、`sourceType`（`LOCAL_INSTALLED|COMPANY_STANDARD`）、`isStandardPublished`、`version`、`author`、`originScenarioId`。附件类型限 `.docx/.xlsx/.csv/.pdf/.md/.txt`，单文件 25 MiB、单卡 20 个，越界路径直接拒绝。
+- **双页签场景中心**：`我的场景`（本地存档卡片，支持进入/编辑/导出/复制/排序/启停/删除）与 `公司推出的场景`（远端标准库，支持安装到本地、下载场景包）。切到公司页签时按需拉取，未配置仓库时给可读提示而不是报错。
+- **新会话三联动**：`conversation.input.dock` 常驻「🟢 正在使用场景：【标题】 | 挂载技能：…」徽标（含 [切换场景] / [× 退出场景]）；进入场景把 `inputDraft || welcomeMessage` 用 `inputActions.setDraft` 写进输入框（光标在末尾、可撤销、不覆盖已有草稿）；预设附件经资产路由取回后 `conversation.createDrafts` + `inputActions.addAttachments` 进入官方待发送托盘。
+- **场景包导出/导入**：`scenario.export` 生成 `<scenarioId>.crm-scenario.json`（附件内联 base64，超 8 MiB 的附件进 `skippedAttachments`）；`scenario.import` 重新分配 `scenarioId`、还原附件、冲突指令自动改名，支持离线分发。
+- **公司标准库同步**：`lib/core/registry.js` 支持 `registryEndpoint`（CRM MCP 控制面 `/api/crm-scenarios` 或 Git Raw JSON）+ `registryToken`；`registry.list` / `scenario.install` / `scenario.publish` 提供列表、幂等安装与发布。安装时把远端附件下载到本地资产目录，失败项在返回里逐条报告。
+- **发布权限**：抽屉里「☑️ 发布为公司标准场景」仅在 `canPublishStandardScenario`（或配置了 `registryToken`）时出现；无权限时后端拒绝发布但本地保存成功，并明确说明原因。
+- **附件边界声明**：注入块新增「## 场景预设附件（SCENARIO_PRESET）」段，并写明「调用 `upload_files_to_record` 时严禁上传预设附件，只归档用户本轮实际提供的材料」；`reminder` 形态同样保留。
+- **资产路由** `GET /crm-workspace/asset/<file>`：与 API 同样的回环/同源校验，只允许单段文件名，`private, max-age=300`，缺失 404。
+
+### 变更
+
+- `bootstrap.config` 回显 `canPublishStandardScenario` / `registryEndpoint` / `registryConfigured`；`taxonomy` 增加 `sourceTypes` / `presetAttachmentExtensions` / `presetAttachmentRole`；`plugin.version` 升到 `1.3.0`。
+- `activation.state` 增加 `draft`：`{ text, source, attachments[] }`，附件只带 `url`（不泄露落盘路径），供输入框与托盘复用。
+- HTTP 请求体上限由 1 MiB 提到 40 MiB（附件 base64 内联上传），dispatch 从 11 项扩到 17 项。
+- 删除/编辑卡片时同步清理不再被引用的附件文件（`pruneAssets`）。
+
+### 验证
+
+- `node --test`：88 个用例全部通过（新增预设附件 schema、存档往返、注入边界声明、输入框契约、安装幂等、导出/导入、发布权限、未配置仓库等用例）。
+- `node scripts/check.mjs`：6 组自检通过（客户端无硬编码颜色、仍为经典脚本、主题变量齐全）。
+
 ## 1.2.0
 
 按用户反馈调整「进入场景」的观感与信息量：不再把技能介绍/正文灌进上下文，并让场景名在对话里直接可见。

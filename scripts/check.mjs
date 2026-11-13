@@ -80,12 +80,26 @@ async function main() {
   expect(index.includes('/crm-workspace/api'), 'lib/index.js 必须挂载 /crm-workspace/api');
   ok('Host 入口导出与挂载点');
 
+  const constants = await readFile(join(root, 'lib/core/constants.js'), 'utf8');
+  const registry = await readFile(join(root, 'lib/core/registry.js'), 'utf8');
+  expect(
+    constants.includes('http://crmmcptest.runner-corp.com.cn:9000'),
+    'constants.js 的默认 MCP 地址必须是 http://crmmcptest.runner-corp.com.cn:9000',
+  );
+  expect(registry.includes('/api/dsh/scenarios'), 'registry.js 必须按 /api/dsh 契约调用标准场景接口');
+  expect(registry.includes('includeDeleted=true'), 'registry.js 同步必须请求 includeDeleted=true');
+  expect(!registry.includes('createdAt: '), 'registry.js 不得主动构造 createdAt 字段');
+  ok('MCP 控制平面契约');
+
   const client = await readFile(join(root, 'lib/client.js'), 'utf8');
   expect(client.includes('__ModuleLoader__.load'), 'lib/client.js 必须通过 window.__ModuleLoader__.load 注册');
   expect(!/^\s*(import|export)\s/m.test(client), 'lib/client.js 是经典脚本，不能出现 import/export 语句');
   expect(/require\(['"]react['"]\)/.test(client), 'lib/client.js 必须用 require("react") 取得 React');
   expect(client.includes("name: 'main'") || client.includes('name:"main"'), 'lib/client.js 必须注册 main 面板');
   expect(client.includes('sidebar.panellist'), 'lib/client.js 必须注册 sidebar.panellist 入口');
+  expect(client.includes('🟢 正在使用场景：【'), 'lib/client.js 必须在输入框上方展示「正在使用场景」标识');
+  expect(client.includes('设为插件标准场景'), 'lib/client.js 必须提供「设为插件标准场景」勾选框');
+  expect(client.includes('复制为本地场景'), 'lib/client.js 必须提供「复制为本地场景」动作');
   const hex = client.match(/#[0-9a-fA-F]{3,8}\b/g) ?? [];
   expect(hex.length === 0, `lib/client.js 不允许硬编码颜色（发现 ${hex.slice(0, 3).join(', ')}），请使用 --dsw-alias-* 变量`);
   ok('客户端脚本加载方式与主题变量');
@@ -101,6 +115,7 @@ async function main() {
   const patch = await readFile(join(root, 'cordis.patch.yml'), 'utf8');
   expect(/id:\s*crm-workspace/.test(patch), 'cordis.patch.yml 缺少 id: crm-workspace');
   expect(/name:\s*['"]?dsh-crm-workspace/.test(patch), 'cordis.patch.yml 的 name 必须是 dsh-crm-workspace');
+  expect(/apiBaseUrl:\s*['"]?http:\/\/crmmcptest\.runner-corp\.com\.cn:9000/.test(patch), 'cordis.patch.yml 必须配置默认 apiBaseUrl');
   ok('bundle patch');
 
   report();

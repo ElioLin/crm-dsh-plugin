@@ -45,7 +45,7 @@ test('首次启动生成空存档，写入后可以被新实例读回', async ()
 
   const raw = JSON.parse(await readFile(join(dataDir, 'state.json'), 'utf8'));
   assert.equal(raw.scenarios.length, 1);
-  assert.equal(raw.version, 1);
+  assert.equal(raw.version, 2);
 
   const reopened = createStateStore({ dataDir });
   await reopened.ready();
@@ -124,4 +124,101 @@ test('激活记录数量超过上限时保留最新的', () => {
   assert.equal(Object.keys(doc.activations).length, 200);
   assert.ok(doc.activations['s-0'] !== undefined);
   assert.equal(doc.activations['s-204'], undefined);
+});
+
+test('存档保留场景预设附件与发布元数据，坏附件被静默丢弃', () => {
+  const stored = {
+    ...card,
+    inputDraft: '拜访对象：\n拜访目的：',
+    version: '1.1.0',
+    author: '李四',
+    sourceType: 'COMPANY_STANDARD',
+    isStandardPublished: true,
+    originScenarioId: 'crm_std_visit',
+    presetAttachments: [
+      {
+        attachmentId: 'att_visit_template',
+        fileName: '拜访纪要标准模板.docx',
+        mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        localPathOrUrl: 'att_visit_template.docx',
+        fileSize: 2048,
+        role: 'SCENARIO_PRESET',
+      },
+      { attachmentId: 'att_bad', fileName: 'payload.exe', localPathOrUrl: 'payload.exe' },
+    ],
+  };
+  const { doc } = sanitizeDoc({ version: 1, scenarios: [stored], activations: {} });
+  assert.equal(doc.scenarios.length, 1);
+  const saved = doc.scenarios[0];
+  assert.equal(saved.inputDraft, '拜访对象：\n拜访目的：');
+  assert.equal(saved.version, '1.1.0');
+  assert.equal(saved.author, '李四');
+  assert.equal(saved.sourceType, 'COMPANY_STANDARD');
+  assert.equal(saved.isStandardPublished, true);
+  assert.equal(saved.originScenarioId, 'crm_std_visit');
+  assert.equal(saved.presetAttachments.length, 1);
+  assert.equal(saved.presetAttachments[0].role, 'SCENARIO_PRESET');
+});
+
+test('存档里的非法版本号不阻止卡片读回（收敛为默认版本）', () => {
+  const { doc } = sanitizeDoc({ version: 1, scenarios: [{ ...card, version: 'v9' }], activations: {} });
+  assert.equal(doc.scenarios.length, 1);
+  assert.equal(doc.scenarios[0].version, '1.0.0');
+});
+
+test('公司标准场景缓存与软删除 ID 会被持久化并收敛', () => {
+  const { doc } = sanitizeDoc({
+    version: 2,
+    scenarios: [],
+    companyStandardScenarios: [
+      {
+        ...card,
+        scenarioId: 'crm_std_visit',
+        sourceType: 'COMPANY_STANDARD',
+        readonlyForNormalUser: false,
+        version: '1.1.0',
+        revision: 3,
+      },
+      { title: '缺字段的坏卡片' },
+    ],
+    deletedScenarioIds: ['crm_std_deleted', 'permission', 42, 'crm_std_deleted'],
+    lastSyncedAt: '2026-11-13T08:00:00.000Z',
+    activations: {},
+  });
+  assert.equal(doc.companyStandardScenarios.length, 1);
+  const company = doc.companyStandardScenarios[0];
+  assert.equal(company.scenarioId, 'crm_std_visit');
+  assert.equal(company.sourceType, 'COMPANY_STANDARD');
+  assert.equal(company.readonlyForNormalUser, true);
+  assert.equal(company.revision, 3);
+  assert.deepEqual(doc.deletedScenarioIds, ['crm_std_deleted']);
+  assert.equal(doc.lastSyncedAt, '2026-11-13T08:00:00.000Z');
+});
+
+test('公司标准场景缓存可被单独读写，且不污染已安装列表', async () => {
+  const dataDir = await tempDir();
+  const store = createStateStore({ dataDir });
+  await store.ready();
+  await store.mutate((draft) => {
+    draft.companyStandardScenarios.push({
+      ...card,
+      scenarioId: 'crm_std_visit',
+      sourceType: 'COMPANY_STANDARD',
+      readonlyForNormalUser: true,
+      version: '1.1.0',
+      revision: 2,
+    });
+    draft.deletedScenarioIds.push('crm_std_deleted');
+    draft.lastSyncedAt = '2026-11-13T08:00:00.000Z';
+    return { result: undefined };
+  });
+  assert.deepEqual(store.scenarios(), []);
+  assert.equal(store.companyScenarios().length, 1);
+  assert.equal(store.findCompanyScenario('crm_std_visit').revision, 2);
+  assert.deepEqual(store.deletedScenarioIds(), ['crm_std_deleted']);
+
+  const reopened = createStateStore({ dataDir });
+  await reopened.ready();
+  assert.equal(reopened.companyScenarios().length, 1);
+  assert.equal(reopened.findCompanyScenario('crm_std_visit').readonlyForNormalUser, true);
 });

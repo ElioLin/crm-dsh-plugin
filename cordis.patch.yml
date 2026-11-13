@@ -9,6 +9,17 @@
       config:
         # 留空 = 使用默认位置 <DSH_PROFILE_DIR>/crm-workspace
         dataDir: ''
+        # MCP 控制平面服务基础地址。地址解析只有一条规则：
+        # 优先本配置项，未配置时插件内置默认值，并自动去掉末尾斜杠。
+        # 上生产时只改这里即可。
+        apiBaseUrl: 'http://crmmcptest.runner-corp.com.cn:9000'
+        # 身份模式：buntu（默认，转发用户 Buntu Token）或 internal_bearer。
+        authMode: buntu
+        # buntu 模式：用户 Token。留空时尝试从当前 DSH 宿主账号上下文读取。
+        buntuToken: ''
+        # internal_bearer 模式：MCP 客户端 Token 与平台用户标识。
+        mcpClientToken: ''
+        platformUserId: ''
         # 场景卡片数量上限（防止界面被无意义的配置撑爆）
         maxScenarioCards: 200
         # 是否在每次模型请求前把「已激活场景 + pinnedSkills」注入会话上下文

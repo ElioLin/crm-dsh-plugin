@@ -1,7 +1,7 @@
 {
   "name": "dsh-crm-workspace",
-  "version": "1.2.0",
-  "description": "CRM 智能工作台：动态场景容器 + 显式 Skill 组装器（DSH Web 插件）",
+  "version": "1.4.0",
+  "description": "CRM 智能工作台：动态场景容器 + 显式 Skill 组装器 + MCP 标准场景协同（DSH Web 插件）",
   "type": "module",
   "main": "lib/index.js",
   "icon": "icon.svg",

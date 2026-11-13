@@ -154,3 +154,192 @@ test('coerceStoredScenario 丢弃不合法卡片', () => {
   assert.equal(coerceStoredScenario({ title: '只有标题' }), undefined);
   assert.equal(coerceStoredScenario(base).scenarioId, 'crm_crm');
 });
+
+const attachment = {
+  attachmentId: 'att_visit_template',
+  fileName: '拜访纪要标准模板.docx',
+  mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  localPathOrUrl: 'att_visit_template.docx',
+  fileSize: 20480,
+  role: 'SCENARIO_PRESET',
+};
+
+test('场景预设附件被规范化：角色固定、MIME 兜底、顺序保留', () => {
+  const result = normalizeScenario(
+    {
+      ...base,
+      presetAttachments: [
+        { ...attachment, mimeType: undefined },
+        {
+          attachmentId: 'att_fields',
+          fileName: '字段清单.csv',
+          localPathOrUrl: 'https://crm.example.com/scenarios/fields.csv',
+          fileSize: 4096,
+        },
+      ],
+    },
+    { existing: [], skillNames: ['crm-core'] },
+  );
+  assert.equal(result.ok, true, JSON.stringify(result.errors));
+  assert.equal(result.card.presetAttachments.length, 2);
+  assert.deepEqual(
+    result.card.presetAttachments.map((item) => item.attachmentId),
+    ['att_visit_template', 'att_fields'],
+  );
+  assert.equal(result.card.presetAttachments[0].role, 'SCENARIO_PRESET');
+  assert.equal(result.card.presetAttachments[0].mimeType, attachment.mimeType);
+  assert.equal(result.card.presetAttachments[1].mimeType, 'text/csv');
+  assert.equal(result.card.inputDraft, '');
+  assert.equal(result.card.sourceType, 'LOCAL_CUSTOM');
+  assert.equal(result.card.readonlyForNormalUser, false);
+  assert.equal(result.card.version, '1.0.0');
+});
+
+test('场景预设附件拒绝不支持的类型、越界路径、重复标识与超量', () => {
+  const unsupported = normalizeScenario(
+    { ...base, presetAttachments: [{ ...attachment, fileName: 'setup.exe' }] },
+    { existing: [], skillNames: [] },
+  );
+  assert.equal(unsupported.ok, false);
+  assert.match(unsupported.errors.map((item) => item.message).join('|'), /类型不受支持/);
+
+  const traversal = normalizeScenario(
+    { ...base, presetAttachments: [{ ...attachment, localPathOrUrl: '../../etc/passwd.docx' }] },
+    { existing: [], skillNames: [] },
+  );
+  assert.equal(traversal.ok, false);
+  assert.match(traversal.errors.map((item) => item.message).join('|'), /缺少合法的存储路径/);
+
+  const duplicated = normalizeScenario(
+    { ...base, presetAttachments: [attachment, { ...attachment, fileName: '另一个.docx' }] },
+    { existing: [], skillNames: [] },
+  );
+  assert.equal(duplicated.ok, false);
+  assert.match(duplicated.errors.map((item) => item.message).join('|'), /重复/);
+
+  const many = Array.from({ length: 21 }, (_item, index) => ({
+    ...attachment,
+    attachmentId: `att_overflow_${index}`,
+    fileName: `模板${index}.docx`,
+  }));
+  const overflow = normalizeScenario({ ...base, presetAttachments: many }, { existing: [], skillNames: [] });
+  assert.equal(overflow.ok, false);
+  assert.match(overflow.errors.map((item) => item.message).join('|'), /最多 20 个预设附件/);
+});
+
+test('输入框预填与发布元数据被规范化', () => {
+  const result = normalizeScenario(
+    {
+      ...base,
+      inputDraft: '拜访对象：\n拜访目的：\n关键结论：',
+      sourceType: 'company_standard',
+      isStandardPublished: true,
+      version: '1.2',
+      author: '张三',
+      originScenarioId: 'crm_std_visit',
+    },
+    { existing: [], skillNames: ['crm-core'] },
+  );
+  assert.equal(result.ok, true, JSON.stringify(result.errors));
+  assert.equal(result.card.inputDraft, '拜访对象：\n拜访目的：\n关键结论：');
+  assert.equal(result.card.sourceType, 'COMPANY_STANDARD');
+  assert.equal(result.card.readonlyForNormalUser, true);
+  assert.equal(result.card.status, 'PUBLISHED');
+  assert.equal(result.card.isStandardPublished, true);
+  assert.equal(result.card.version, '1.2.0');
+  assert.equal(result.card.revision, 0);
+  assert.equal(result.card.author, '张三');
+  assert.equal(result.card.originScenarioId, 'crm_std_visit');
+});
+
+test('非法版本号与超长创建人报错；未知来源与非法来源编码只告警', () => {
+  const invalid = normalizeScenario({ ...base, version: 'v1', author: 'x'.repeat(81) }, { existing: [], skillNames: [] });
+  assert.equal(invalid.ok, false);
+  const messages = invalid.errors.map((item) => item.message).join('|');
+  assert.match(messages, /版本号格式/);
+  assert.match(messages, /创建人不能超过 80 个字符/);
+
+  const coerced = normalizeScenario(
+    { ...base, sourceType: 'CLOUD', originScenarioId: 'bad id' },
+    { existing: [], skillNames: [] },
+  );
+  assert.equal(coerced.ok, true);
+  assert.equal(coerced.card.sourceType, 'LOCAL_CUSTOM');
+  assert.equal(coerced.card.originScenarioId, '');
+  const warnings = coerced.warnings.map((item) => item.message).join('|');
+  assert.match(warnings, /未知场景来源/);
+  assert.match(warnings, /来源场景编码/);
+});
+
+test('coerceStoredScenario 宽松修复存档里的发布元数据与坏附件', () => {
+  const card = coerceStoredScenario({
+    ...base,
+    version: 'v2',
+    presetAttachments: [{ fileName: 'setup.exe', localPathOrUrl: 'setup.exe' }],
+  });
+  assert.ok(card);
+  assert.equal(card.version, '1.0.0');
+  assert.deepEqual(card.presetAttachments, []);
+  assert.equal(card.sourceType, 'LOCAL_CUSTOM');
+});
+
+test('scenarioId 遵循服务端正则：允许大小写/点/连字符，拒绝保留字 permission', () => {
+  const accepted = normalizeScenario(
+    { ...base, scenarioId: 'CRM.Std-Visit_01' },
+    { existing: [], skillNames: [] },
+  );
+  assert.equal(accepted.ok, true, JSON.stringify(accepted.errors));
+  assert.equal(accepted.card.scenarioId, 'CRM.Std-Visit_01');
+
+  const reserved = normalizeScenario(
+    { ...base, scenarioId: 'permission' },
+    { existing: [], skillNames: [] },
+  );
+  assert.equal(reserved.ok, false);
+  assert.match(reserved.errors.map((item) => item.message).join('|'), /保留字 permission/);
+
+  const bad = normalizeScenario(
+    { ...base, scenarioId: '_leading' },
+    { existing: [], skillNames: [] },
+  );
+  assert.equal(bad.ok, false);
+});
+
+test('旧存档的 LOCAL_INSTALLED 迁移为 LOCAL_CUSTOM', () => {
+  const card = coerceStoredScenario({
+    ...base,
+    scenarioId: 'crm_legacy',
+    sourceType: 'LOCAL_INSTALLED',
+  });
+  assert.ok(card);
+  assert.equal(card.sourceType, 'LOCAL_CUSTOM');
+  assert.equal(card.readonlyForNormalUser, false);
+});
+
+test('公司标准场景强制只读并保留远端 revision / 附件 sha256', () => {
+  const result = normalizeScenario(
+    {
+      ...base,
+      scenarioId: 'crm_std_visit',
+      sourceType: 'COMPANY_STANDARD',
+      readonlyForNormalUser: false,
+      revision: 7,
+      version: '1.2.3',
+      presetAttachments: [
+        {
+          ...attachment,
+          localPathOrUrl: 'https://crmmcptest.runner-corp.com.cn:9000/api/dsh/scenarios/crm_std_visit/attachments/att_visit_template',
+          downloadUrl: '/api/dsh/scenarios/crm_std_visit/attachments/att_visit_template',
+          sha256: 'a'.repeat(64),
+        },
+      ],
+    },
+    { existing: [], skillNames: [] },
+  );
+  assert.equal(result.ok, true, JSON.stringify(result.errors));
+  assert.equal(result.card.readonlyForNormalUser, true);
+  assert.equal(result.card.revision, 7);
+  assert.equal(result.card.status, 'PUBLISHED');
+  assert.equal(result.card.presetAttachments[0].sha256, 'a'.repeat(64));
+  assert.match(result.card.presetAttachments[0].downloadUrl, /^\/api\/dsh\//);
+});

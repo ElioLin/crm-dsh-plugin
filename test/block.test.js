@@ -155,3 +155,59 @@ test('空内容与小预算不会抛错', () => {
   assert.ok(text.includes('未锚定'));
   assert.deepEqual(summarizeStack([{ name: 'a' }, { name: 'b' }]), 'a → b');
 });
+
+test('场景预设附件会带出边界声明，禁止归档到业务单据', () => {
+  const text = buildContextBlock({
+    card: {
+      ...card,
+      presetAttachments: [
+        {
+          attachmentId: 'att_tpl',
+          fileName: '拜访纪要标准模板.docx',
+          mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          localPathOrUrl: 'att_tpl.docx',
+          fileSize: 2048,
+          role: 'SCENARIO_PRESET',
+        },
+        {
+          attachmentId: 'att_csv',
+          fileName: '字段清单.csv',
+          mimeType: 'text/csv',
+          localPathOrUrl: 'att_csv.csv',
+          fileSize: 12,
+          role: 'SCENARIO_PRESET',
+        },
+      ],
+    },
+    skills: [{ name: 'crm-core', description: 'desc' }],
+  });
+  assert.ok(text.includes('## 场景预设附件（SCENARIO_PRESET）'));
+  assert.match(text, /拜访纪要标准模板\.docx（application\/vnd.*，2\.0 KB）/);
+  assert.match(text, /字段清单\.csv（text\/csv，12 B）/);
+  assert.ok(text.includes('【附件边界声明】'));
+  assert.match(text, /严禁将场景预设附件上传至 CRM 业务单据中/);
+  assert.match(text, /仅允许归档用户在本轮对话中实际提供的业务原始材料/);
+  // 边界声明必须出现在技能栈之前，避免模型先看到技能再看到约束
+  assert.ok(text.indexOf('【附件边界声明】') < text.indexOf('## 技能栈'));
+});
+
+test('没有预设附件时不会出现边界声明', () => {
+  const text = buildContextBlock({ card, skills: [{ name: 'crm-core' }] });
+  assert.ok(!text.includes('SCENARIO_PRESET'));
+  assert.ok(!text.includes('【附件边界声明】'));
+});
+
+test('reminder 模式同样保留附件边界', () => {
+  const text = buildContextBlock({
+    card: {
+      ...card,
+      presetAttachments: [
+        { attachmentId: 'a', fileName: '模板.md', mimeType: 'text/markdown', localPathOrUrl: 'a.md', fileSize: 3, role: 'SCENARIO_PRESET' },
+      ],
+    },
+    skills: [{ name: 'crm-core' }],
+    mode: 'reminder',
+  });
+  assert.ok(text.includes('mode=reminder'));
+  assert.ok(text.includes('【附件边界声明】'));
+});

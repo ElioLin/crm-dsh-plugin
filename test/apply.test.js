@@ -6,6 +6,7 @@ import { Readable } from 'node:stream';
 import test from 'node:test';
 
 import { apply, cloneWithText, normalizeConfig } from '../lib/index.js';
+import { DEFAULT_MCP_API_BASE_URL } from '../lib/core/constants.js';
 
 const scenarioDraft = {
   title: 'CRM 单据新建与修改',
@@ -128,6 +129,17 @@ test('normalizeConfig 收敛路径与布尔开关', () => {
   assert.equal(config.registerSlashCommands, true);
   assert.ok(config.dataDir.endsWith('crm-x'));
   assert.ok(normalizeConfig(undefined).dataDir.endsWith('crm-workspace'));
+});
+
+test('normalizeConfig 的 apiBaseUrl 只有单一优先级并去掉末尾斜杠', () => {
+  assert.equal(normalizeConfig({}).apiBaseUrl, DEFAULT_MCP_API_BASE_URL);
+  assert.equal(normalizeConfig({ apiBaseUrl: '  ' }).apiBaseUrl, DEFAULT_MCP_API_BASE_URL);
+  assert.equal(
+    normalizeConfig({ apiBaseUrl: ' http://crm.example.com:9000/// ' }).apiBaseUrl,
+    'http://crm.example.com:9000',
+  );
+  assert.equal(normalizeConfig({ authMode: 'internal_bearer' }).authMode, 'internal_bearer');
+  assert.equal(normalizeConfig({ authMode: 'other' }).authMode, 'buntu');
 });
 
 test('cloneWithText 保留原消息结构，只替换文本与 id', () => {
