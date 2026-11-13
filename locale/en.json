@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "CRM Workspace Hub (dsh-crm-workspace)",
+    "description": "A dynamic scenario container for enterprise CRM work: administrators define scenario cards (title, description, icon, category, slash command, pinnedSkills, default object/action/form entry, welcome message); clicking a card activates its pinnedSkills stack in order and injects the scenario context into the current session, so the model never has to blindly route across a global skill catalogue."
+  }
+}

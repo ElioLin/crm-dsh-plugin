@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "CRM 智能工作台 (dsh-crm-workspace)",
+    "description": "面向企业 CRM 业务的动态场景容器：管理员按 Schema 配置场景卡片（标题、介绍、图标、分类、快捷指令、pinnedSkills、默认对象/动作/表单入口、开场引导语），业务人员点卡片即按 pinnedSkills 顺序显式激活 Skill 栈并把场景上下文注入当前会话，杜绝大模型在全局技能里盲目路由。"
+  }
+}

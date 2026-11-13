@@ -1,0 +1,24 @@
+# CRM 智能工作台 (CRM Workspace Hub) —— DSH Bundle patch
+#
+# 作为 bundle 被合并进 profile 时，自动插入本插件条目。
+# 场景卡片不写死在这里：它们由管理员在工作台里按 Schema 新增/编辑，
+# 持久化在 <profile>/crm-workspace/state.json。
+- insert:
+    - id: crm-workspace
+      name: 'dsh-crm-workspace'
+      config:
+        # 留空 = 使用默认位置 <DSH_PROFILE_DIR>/crm-workspace
+        dataDir: ''
+        # 场景卡片数量上限（防止界面被无意义的配置撑爆）
+        maxScenarioCards: 200
+        # 是否在每次模型请求前把「已激活场景 + pinnedSkills」注入会话上下文
+        injectSkillsOnStep: true
+        # 是否把 Skill 正文（几万字）直接写进注入块。默认 false：
+        # 只注入 Skill 名称，正文由模型用 skill 工具按顺序加载。
+        injectSkillBodies: false
+        # 是否在技能栈里附带每个 Skill 的一行描述。默认 false（同样为了少占上下文）
+        injectSkillDescriptions: false
+        # 是否把每张卡片的 slashCommand 注册成真正的 Host 指令
+        registerSlashCommands: true
+        # 是否在侧边栏显示入口（关闭后仅保留 main 面板与指令）
+        showSidebarEntry: true
