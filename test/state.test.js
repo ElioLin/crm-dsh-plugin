@@ -19,7 +19,6 @@ const card = {
   category: '核心单据管控',
   slashCommand: '/record',
   enabled: true,
-  isSystemBase: false,
   pinnedSkills: ['crm-core'],
   prePinnedContext: { defaultAction: 'CREATE', formContextEntry: 'STANDARD', allowAttachments: true },
   welcomeMessage: '请描述你要新建的单据。',

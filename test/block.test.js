@@ -41,9 +41,11 @@ test('默认只注入场景与 Skill 名称，不带介绍与正文', () => {
   // 场景说明仍然保留（管理员写的一句话适用范围）。
   assert.ok(text.includes('## 场景说明（管理员填写）'));
   assert.ok(text.includes(card.description));
-  assert.ok(text.includes('Case（已由场景固定'));
-  assert.ok(text.includes('新建（CREATE）'));
-  assert.ok(text.includes('快速操作入口（QUICK_ACTION）'));
+  // 目标对象 / 动作 / 表单入口不再配置，改为要求模型现场判断。
+  assert.ok(text.includes('目标对象与动作：不预设'));
+  assert.ok(text.includes('表单入口：不预设'));
+  assert.ok(text.includes('允许，用户上传的单据/表格/图片可作为执行依据'));
+  assert.ok(!text.includes('Case'));
   // 要求模型自己按顺序加载正文。
   assert.match(text, /用 skill 工具逐个按名称加载正文/);
   // 名称模式下不出现「未预载」这类逐条标注。
@@ -104,14 +106,17 @@ test('未绑定 Skill 时给出明确说明而不是空白', () => {
   assert.deepEqual(skillLines([]).length, 1);
 });
 
-test('未锚定目标对象时要求模型先发现对象', () => {
+test('不再锚定对象/动作/表单入口，统一交给模型按上下文判断', () => {
   const text = buildContextBlock({
     card: { ...card, prePinnedContext: { ...card.prePinnedContext, defaultObjectApiName: undefined } },
     skills,
     mode: 'reminder',
   });
-  assert.ok(text.includes('未锚定：先根据用户描述与可用工具确定对象'));
+  assert.ok(text.includes('先根据用户描述与可用工具确认对象'));
+  assert.ok(text.includes('按当前可用的标准表单入口或快速操作入口自动选择'));
   assert.ok(text.includes('允许，用户上传的单据/表格/图片可作为执行依据'));
+  // 旧卡片即使存档里还带着 defaultObjectApiName，也不会再写进注入块。
+  assert.ok(!text.includes('Case'));
 });
 
 test('正文按预算截断，并保留被截断的事实', () => {
@@ -152,7 +157,7 @@ test('空内容与小预算不会抛错', () => {
     skills: [{ name: 'x' }],
   });
   assert.ok(text.includes('crm_case'));
-  assert.ok(text.includes('未锚定'));
+  assert.ok(text.includes('不预设'));
   assert.deepEqual(summarizeStack([{ name: 'a' }, { name: 'b' }]), 'a → b');
 });
 

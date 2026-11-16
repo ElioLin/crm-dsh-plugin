@@ -1,5 +1,91 @@
 # 变更记录
 
+## 1.5.1
+
+修掉「点卡片进入场景后，输入框没有被预填」的问题——根因是插件一直在跟一个用户看不见的会话打交道。
+
+### 修复
+
+- **当前会话解析错误**：`currentSessionId` 只读 `sessions.list` 快照的 `snapshot.current`，而 DSH 的会话列表快照只有 `ids / byId / phase`，**没有 `current` 这个字段**，于是永远返回 `undefined`。结果「进入场景」时 `ensureSession` 总是新建一个会话，激活记录、预填、徽标全写在这个后台会话上；界面切到对话面板后显示的是「没有选中会话」的空白态，输入框自然是空的。
+  现在按 DSH 的真实机制解析：`uiSession.adapter.current`（主面板的 main 绑定）→ 列表中 `retainedBy.mainView > 0` 的那一行 → 兼容旧版 `snapshot.current`。
+- **会话切换用错 API**：`switchToConversation` 调的是 `ctx.sessions.open(...)`，但 `sessions` 上没有这个方法，调用静默失败，界面根本没切到目标会话。改为 `uiWorkspace.openSession(sessionId)`（DSH 自己的导航入口），并保留 `selectPanel('conversation')`。
+- **`startSession` 用法错误**：它是「新建并导航」的 void API，旧代码却 `await` 它的返回值。现在调用后轮询 `uiSession` 的当前绑定（最多 4 秒）拿到新会话 id，再激活。
+- **工作台面板拆卸对话面板时丢会话**：工作台是另一个 main 面板，打开它时对话面板被卸载、`mainView` 租用释放，当前绑定变空。新增 `lastSessionId`（由对话标题徽标与输入框组件挂载时记录），`resumableSessionId` 在当前绑定为空时回退到它，避免「一进工作台再点卡片就多开一个会话」。
+- **预填延迟**：面板完成激活/退出后广播 `crm-workspace:activation` 事件，输入框上方的徽标与开场卡片立即重读状态，不再等 6/8 秒轮询。
+- **预填写入兜底**：除了 slot 提供的 `inputActions.setDraft`，再补一条 `conversation.input.for(sessionScope)` 路径；任一路径不可用时会重试（最多 20 次 × 800ms），不再静默放弃。
+
+### 验证
+
+- `node --test`：131 个用例全部通过（新增「进入场景必须落在主面板正在显示的会话上」契约用例：禁止再用 `sessions.list.current` 与 `ctx.sessions.open`，禁止 `await startSession`）。
+- `node scripts/check.mjs`：7 组自检通过。
+
+## 1.5.0
+
+按一线反馈收窄配置面、把「创建人」换回 DSH 身份，并让开场引导语真正出现在新会话里。
+
+### 变更
+
+- **无权限时不再显示发布入口**：`新建/编辑场景` 抽屉里的「设为插件标准场景」整块只在 `auth.canManageStandardScenario === true` 时渲染，普通用户看不到也勾不了（之前是渲染但灰掉，容易让人以为勾了就会发布）。
+- **移除三个不需要配置的字段**：目标对象 API 名、默认动作、表单入口不再出现在抽屉里。它们本来就该由模型结合用户当次的描述与可用工具判断，预先钉死一个默认值只会误导执行；注入块改成「不预设，先确认对象与入口」的明确指令。存档字段与 MCP 写请求仍保留默认值（服务端 zod 要求），但对 UI 与模型都不再有意义。
+- **移除「标记为系统底座」**：连同卡片上的「系统底座」标记一起下线（`ScenarioCardConfig.isSystemBase` 不再写入存档；旧存档里的该字段读入时被丢弃）。
+- **创建人只用 DSH 身份**：`resolveCurrentUser` 不再把 MCP 的 `auth.crmUsername`（Salesforce 用户名）当成当前用户，顺序改为 `defaultAuthor` → 宿主 `deepseekAccount` 资料 → 进程用户。新建时由宿主解析（前端伪造无效），编辑时保留原创建人；公司标准场景的远端创建人只留在 `createdByCrmUser` / `createdByPlatformUid` 里，在编辑抽屉作为提示展示。
+
+### 新增
+
+- **新会话「场景开场」卡片**：`conversation.input.dock` 在空白会话（`session.blank === true`）里额外渲染一张引导卡片——场景图标 + `/场景名称` + `welcomeMessage`。它是 UI 投影，不写会话历史、不产生消息气泡，发出第一条消息后自动消失。
+- **输入框预填带场景引用**：`activationState.draft` 新增 `reference`（`/场景名称`）与 `welcome`；预填内容变成「`/场景名称` + inputDraft」两行，用户一眼能看出这条消息引用了哪个场景。纯 ASCII 且与指令同名的标题会被加「场景」前缀，避免回车时被当成斜杠指令执行。
+- **卡片页脚显示预设附件数**：原来显示「新建/修改/智能判断」的位置改为 `📌 N`（有预设附件时）。
+
+### 说明
+
+- 新会话顶部那行「小犇，我帮你…」属于 DSH 自己的空会话标题（`HeroShell` 的 `hero.headline`），只开放了 `conversation.hero.brand.mark` 与 `conversation.hero.workspace` 两个插槽，没有替换标题的插槽。插件只能在同一个位置补「场景开场」卡片；要改那行文案本身必须改 DSH 侧的品牌/本地化配置或源码。
+
+### 验证
+
+- `node --test`：130 个用例全部通过（新增「创建人不用 Salesforce 用户名且不可伪造」「远端标准场景映射不再写 createdByCrmUser」「无权限时抽屉不渲染发布入口」等用例）。
+- `node scripts/check.mjs`：7 组自检通过。
+
+## 1.4.2
+
+场景面板的界面与权限调整：标准场景只读、凭据不进 UI，本地场景人人可建可改，开关改用可读的选项卡片。
+
+### 变更
+
+- 页签「公司推出的场景」更名为「标准场景」，页头不再展示 MCP 地址；认证通过只显示「已认证」，不再回显 Salesforce 用户名（鼠标悬停可看身份来源）。
+- 「新建场景」按钮对所有人可见：普通用户保存即本地场景，`设为插件标准场景` 仍需标准场景管理员权限，服务端会把越权发布降级为本地场景并提示原因。
+- 已安装场景的「编辑」回到卡片菜单：本地场景人人可编辑，标准场景仅管理员可编辑，普通用户可「复制为本地场景」。
+
+### 修复
+
+- 卡片与公司场景菜单改为 `Menu` 组件：点击菜单外部或按 Esc 即关闭，选中菜单项后立刻收起，不用再点一次。
+- 编辑器开关由「整块反色的开关行」改为 `.crmw-option` 选项卡片：左侧方形复选框（选中为品牌色底 + 白色对勾）、右侧标题与一句说明，选中态只做轻微品牌色描边，不再出现大面积黑色。
+
+### 验证
+
+- `node --test`：127 个用例全部通过；`node scripts/check.mjs`：7 组自检通过（无硬编码颜色）。
+
+## 1.4.1
+
+去掉「公司推出的场景」页签的手工凭据配置：插件自己从 DSH 登录身份与部署配置里取凭据，自动通过 MCP 控制平面认证。
+
+### 新增
+
+- **自动登录身份**：新增 `createInternalCredentialResolver`（`lib/index.js`），按「显式配置 → 环境变量 → `<DSH_HOME>/.env` → `<DSH_HOME>/identity.json`」解析 `internal_bearer` 凭据——部署级客户端 Token（`CRM_MCP_CLIENT_TOKEN` 或 `mcpClientToken`）+ 登录用户薪号（`salary_id`），结果缓存 60 秒，换人登录后一分钟内自动跟随。运行期往 `.env` 补一条 Token 即可生效，不必重启桌面端。
+- **部署契约对齐**：`internal_bearer` 请求改发控制面实际校验的 `X-Platform-User-Id`（可用 `platformUserHeader` 改），并同时保留兼容别名 `X-SFOA-Platform-User`；此前只发别名，导致 `auth.authenticated` 恒为 `false`。
+- **身份来源可观测**：`bootstrap` 的 `config` 新增 `identitySource`（如 `internal_bearer:env+identity`）与 `platformUserHeader`，页签文案据此显示「DSH 登录身份自动注入」。
+
+### 变更
+
+- `authMode` 默认值由 `buntu` 改为 `auto`：先用能自动解析到的 `internal_bearer` 凭据，取不到再回退 Buntu Token；显式 `buntu` / `internal_bearer` 仍然强制生效。
+- 启动后台同步门禁改为「确实能带上身份才发第一个请求」：显式/环境 Buntu Token 或可解析的 `internal_bearer` 凭据，二者皆无时保持静默，避免无意义 401。
+- 未认证提示文案改为「未取到 DSH 登录身份，也无可用的 Buntu Token」，并说明自动解析顺序。
+
+### 验证
+
+- `node --test`：126 个用例全部通过（新增 6 个登录身份用例：`salary_id` 解析、缺 Token / 缺身份文件回落、配置优先、`buntu` 模式不解析、字段别名、`.env` 读取与进程环境优先级）。
+- `node scripts/check.mjs`：7 组自检通过。
+- 端到端实测：`GET /api/dsh/scenarios/permission` 返回 `{"authenticated":true,"platformUserId":"61979","canManageStandardScenario":true}`。
+
 ## 1.4.0
 
 对接已上线的 MCP 控制平面服务（`http://crmmcptest.runner-corp.com.cn:9000`），把「公司标准场景」从轻量 JSON 仓库升级为完整的 8 接口协同：权限联动、自动升级、只读保护与本地副本。

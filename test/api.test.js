@@ -277,7 +277,6 @@ test('新建场景后 bootstrap 能读到，并带上分类/图标等词表', as
   assert.equal(boot.scenarios.length, 1);
   assert.equal(boot.installedScenarios.length, 1);
   assert.deepEqual(boot.companyStandardScenarios, []);
-  assert.equal(boot.taxonomy.actions.length, 3);
   assert.equal(boot.taxonomy.icons.length, 12);
   assert.equal(boot.limits.description, 4000);
   assert.equal(boot.config.apiBaseUrl, DEFAULT_MCP_API_BASE_URL);
@@ -494,8 +493,80 @@ test('internal_bearer 模式发送 MCP Token 与平台用户头', async () => {
   assert.equal(permission.ok, true);
   assert.equal(calls[0].url, 'http://crmmcptest.runner-corp.com.cn:9000/api/dsh/scenarios/permission');
   assert.equal(calls[0].init.headers.authorization, 'Bearer mcp-client-token');
+  // 部署校验的头名 + 老版本插件用过的别名，两个都要发。
+  assert.equal(calls[0].init.headers['x-platform-user-id'], '42');
   assert.equal(calls[0].init.headers['x-sfoa-platform-user'], '42');
   assert.equal(calls[0].init.headers['x-buntu-token'], undefined);
+  assert.equal(registry.getIdentitySource(), 'internal_bearer:config');
+});
+
+test('auto 模式优先使用宿主解析出的 internal_bearer 凭据', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    return new Response(JSON.stringify({ authenticated: true, platformUserId: '61979' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+  const registry = createRegistry({
+    apiBaseUrl: 'http://crm.example.com',
+    authMode: 'auto',
+    getToken: async () => 'buntu-token',
+    getInternalCredential: async () => ({ mcpClientToken: 'shared-token', platformUserId: '61979', source: 'env+identity' }),
+    fetchImpl,
+  });
+  await registry.getPermission();
+  assert.equal(calls[0].init.headers.authorization, 'Bearer shared-token');
+  assert.equal(calls[0].init.headers['x-platform-user-id'], '61979');
+  assert.equal(calls[0].init.headers['x-buntu-token'], undefined);
+  assert.equal(registry.getIdentitySource(), 'internal_bearer:env+identity');
+});
+
+test('auto 模式解析不到内部凭据时回退到 Buntu 双头', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    return new Response(JSON.stringify({ authenticated: false }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+  const registry = createRegistry({
+    apiBaseUrl: 'http://crm.example.com',
+    authMode: 'auto',
+    getToken: async () => 'buntu-token',
+    getInternalCredential: async () => null,
+    fetchImpl,
+  });
+  await registry.getPermission();
+  assert.equal(calls[0].init.headers.authorization, 'Bearer buntu-token');
+  assert.equal(calls[0].init.headers['x-buntu-token'], 'buntu-token');
+  assert.equal(calls[0].init.headers['x-platform-user-id'], undefined);
+  assert.equal(registry.getIdentitySource(), 'buntu_token');
+});
+
+test('自定义平台身份头会替代默认头名，并保留兼容别名', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    return new Response(JSON.stringify({ authenticated: true }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+  const registry = createRegistry({
+    apiBaseUrl: 'http://crm.example.com',
+    authMode: 'internal_bearer',
+    mcpClientToken: 'shared-token',
+    platformUserId: '42',
+    platformUserHeader: 'X-WeCom-User-Id',
+    fetchImpl,
+  });
+  await registry.getPermission();
+  assert.equal(calls[0].init.headers['x-wecom-user-id'], '42');
+  assert.equal(calls[0].init.headers['x-sfoa-platform-user'], '42');
+  assert.equal(calls[0].init.headers['x-platform-user-id'], undefined);
 });
 
 test('服务端 400 错误保留 code 与 correlationId', async () => {
@@ -945,8 +1016,20 @@ test('公司页签同步失败时不把远端场景塞进已安装列表', async
   assert.deepEqual(store.scenarios(), []);
 });
 
-/* ── 预设附件 / 新会话契约 / 导出导入 ─────────────────────────── */
+test('公司页签返回本次同步实际使用的身份来源', async () => {
+  const registry = createFakeMcp({ auth: authNormal, scenarios: [] });
+  registry.getIdentitySource = () => 'internal_bearer:env+identity';
+  const { api } = await makeApi({ registry });
+  const result = await api.listCompanyScenarios({});
+  assert.equal(result.identitySource, 'internal_bearer:env+identity');
 
+  // 旧的自定义 registry 没有该方法：降级为空串，面板不能因此报错。
+  delete registry.getIdentitySource;
+  const fallback = await api.listCompanyScenarios({});
+  assert.equal(fallback.identitySource, '');
+});
+
+/* ── 预设附件 / 新会话契约 / 导出导入 ─────────────────────────── */
 test('场景预设附件可上传，并可被写进卡片保存', async () => {
   const { api } = await makeApi();
   const uploaded = await api.saveAttachment({
@@ -991,6 +1074,10 @@ test('activationState 返回输入框预填契约：inputDraft 优先，回退 w
   const state = await api.activationState({ sessionId: 's-1' });
   assert.equal(state.draft.text, '拜访对象：\n拜访目的：');
   assert.equal(state.draft.source, 'inputDraft');
+  // 场景引用标记：输入框第一行显示 `/场景名称`。
+  assert.equal(state.draft.reference, '/CRM 单据新建与修改');
+  // 开场引导语单独下发：客户端把它渲染成新会话里的「场景开场」卡片。
+  assert.equal(state.draft.welcome, baseDraft.welcomeMessage);
   assert.deepEqual(state.draft.attachments, []);
   assert.equal(state.scenario.version, '1.0.0');
 
@@ -1002,6 +1089,8 @@ test('activationState 返回输入框预填契约：inputDraft 优先，回退 w
   const fallbackState = await api.activationState({ sessionId: 's-2' });
   assert.equal(fallbackState.draft.text, baseDraft.welcomeMessage);
   assert.equal(fallbackState.draft.source, 'welcomeMessage');
+  assert.equal(fallbackState.draft.reference, '/无预填场景');
+  assert.equal(fallbackState.draft.welcome, baseDraft.welcomeMessage);
 });
 
 test('activationState 把预设附件转成可拉取的下载地址', async () => {
@@ -1022,15 +1111,41 @@ test('activationState 把预设附件转成可拉取的下载地址', async () =
   assert.equal(state.draft.attachments[0].localPathOrUrl, undefined);
 });
 
-test('新会话 3 项带入的客户端契约：标识、引导语、预设附件', async () => {
+test('新会话带入的客户端契约：场景引用、开场引导、预设附件', async () => {
   const source = await readFile(new URL('../lib/client.js', import.meta.url), 'utf8');
   assert.ok(source.includes('🟢 正在使用场景：【'));
   assert.ok(source.includes('(v${card.version ?? \'1.0.0\'})'));
   assert.ok(source.includes("callHost('activation.state'"));
-  assert.ok(source.includes('inputActions.setDraft(text)'));
+  assert.ok(source.includes('writeDraft(draftText)'));
+  assert.ok(source.includes('seed.reference'));
+  assert.ok(source.includes('crmw-guide'));
   assert.ok(source.includes('inputActions.addAttachments(ids)'));
   assert.ok(source.includes('复制为本地场景'));
   assert.ok(source.includes('设为插件标准场景'));
+});
+
+test('进入场景必须落在主面板正在显示的会话上，而不是后台新建的隐形会话', async () => {
+  const source = await readFile(new URL('../lib/client.js', import.meta.url), 'utf8');
+  // sessions.list 快照只有 ids/byId/phase，没有 current：
+  // 当前会话要靠 uiSession 的 main 绑定（retainedBy.mainView）解析。
+  assert.ok(source.includes("getService(ctx, 'uiSession')?.adapter?.current"));
+  assert.ok(source.includes('retainedBy?.mainView'));
+  // 会话切换只认 uiWorkspace.openSession（ctx.sessions 上没有 open）。
+  assert.ok(source.includes('uiWorkspace?.openSession'));
+  // startSession 是 void 导航 API，返回 id 的旧写法必须消失。
+  assert.ok(!source.includes('const created = await uiWorkspace.startSession'));
+  // 激活/退出后主动广播，输入框徽标与预填不用等下一轮轮询。
+  assert.ok(source.includes('crm-workspace:activation'));
+});
+
+test('无标准场景管理权限时抽屉不渲染发布入口', async () => {
+  const source = await readFile(new URL('../lib/client.js', import.meta.url), 'utf8');
+  // 发布块由 canManageStandard 控制：无权限整块不渲染，而不是只置灰。
+  assert.ok(source.includes('无权限时整块不渲染'));
+  assert.match(source, /canManageStandard === true\s*\?\s*h\(\s*Field/);
+  // 三个不再需要配置的字段已从抽屉移除。
+  assert.ok(!source.includes('目标对象 API 名'));
+  assert.ok(!source.includes('标记为系统底座'));
 });
 
 test('导出场景包内联附件与 sha256，导入后还原为新卡片且附件落盘', async () => {
@@ -1101,6 +1216,49 @@ test('创建人由宿主当前用户带出，且 bootstrap 下发当前用户与
 
   const boot = await api.bootstrap({});
   assert.equal(boot.plugin.currentUser, '李四');
+});
+
+test('创建人只用 DSH 身份：MCP 的 Salesforce 用户名不参与，也无法由前端伪造', async () => {
+  const registry = createFakeMcp({
+    auth: { ...authNormal, crmUsername: 'salesforce.zhangsan@corp.com' },
+  });
+  const { api } = await makeApi({ registry, getCurrentUser: async () => '桌面端李四' });
+  // 先拉一次权限，让 MCP 的 crmUsername 进入 Host 的 auth 缓存。
+  await api.getPermission({ refresh: true });
+
+  const boot = await api.bootstrap({});
+  assert.equal(boot.plugin.currentUser, '桌面端李四');
+  assert.equal(boot.auth.crmUsername, 'salesforce.zhangsan@corp.com');
+
+  // 即使请求体里塞了 Salesforce 用户名，保存时也会被宿主解析结果覆盖。
+  const saved = await api.saveScenario({
+    draft: { ...baseDraft, author: 'salesforce.zhangsan@corp.com' },
+  });
+  assert.equal(saved.ok, true, JSON.stringify(saved));
+  assert.equal(saved.card.author, '桌面端李四');
+
+  // 编辑时保留原创建人，不会被当前操作人改写。
+  const edited = await api.saveScenario({
+    draft: { ...saved.card, description: '改一段说明' },
+    previousId: saved.card.scenarioId,
+  });
+  assert.equal(edited.ok, true, JSON.stringify(edited));
+  assert.equal(edited.card.author, '桌面端李四');
+});
+
+test('远端标准场景映射不再把 createdByCrmUser 写成创建人', async () => {
+  const registry = createFakeMcp({
+    auth: authManager,
+    scenarios: [remoteScenario()],
+    downloads: { att_std_template: Buffer.from('DOCX-BYTES') },
+  });
+  const { api } = await makeApi({ registry, getCurrentUser: async () => '桌面端王五' });
+  await api.syncCompanyScenarios();
+
+  const boot = await api.bootstrap({});
+  const company = boot.companyStandardScenarios.find((card) => card.scenarioId === 'crm_std_visit');
+  assert.equal(company.author, '');
+  assert.equal(company.createdByCrmUser, '销售运营部');
 });
 
 test('bootstrap 给预设附件补上可 GET 的 url，但存档里不写入该字段', async () => {

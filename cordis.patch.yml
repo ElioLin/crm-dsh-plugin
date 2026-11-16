@@ -13,13 +13,18 @@
         # 优先本配置项，未配置时插件内置默认值，并自动去掉末尾斜杠。
         # 上生产时只改这里即可。
         apiBaseUrl: 'http://crmmcptest.runner-corp.com.cn:9000'
-        # 身份模式：buntu（默认，转发用户 Buntu Token）或 internal_bearer。
-        authMode: buntu
-        # buntu 模式：用户 Token。留空时尝试从当前 DSH 宿主账号上下文读取。
+        # 身份模式：auto（默认）= 先用能自动解析到的 internal_bearer 凭据，
+        # 取不到再回退 buntu（转发用户 Buntu Token）；也可强制 internal_bearer / buntu。
+        authMode: auto
+        # buntu 模式：用户 Token。留空时依次尝试 DSH 宿主账号上下文与环境变量。
         buntuToken: ''
-        # internal_bearer 模式：MCP 客户端 Token 与平台用户标识。
+        # internal_bearer 模式：部署级客户端 Token（留空读环境变量 / <DSH_HOME>/.env
+        # 的 CRM_MCP_CLIENT_TOKEN）与平台用户标识（留空读 CRM_PLATFORM_USER_ID，
+        # 再退到登录门禁写的 <DSH_HOME>/identity.json）。
         mcpClientToken: ''
         platformUserId: ''
+        # 平台身份头名称；插件同时发送兼容别名 x-sfoa-platform-user。
+        platformUserHeader: 'x-platform-user-id'
         # 场景卡片数量上限（防止界面被无意义的配置撑爆）
         maxScenarioCards: 200
         # 是否在每次模型请求前把「已激活场景 + pinnedSkills」注入会话上下文

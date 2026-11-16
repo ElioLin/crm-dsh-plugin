@@ -92,24 +92,23 @@ test('Skill 仓库里找不到的标识只警告、不阻断保存', () => {
   assert.ok(result.warnings.some((warning) => warning.field === 'pinnedSkills' && /crm-record-change/.test(warning.message)));
 });
 
-test('目标对象 API 名格式校验', () => {
-  const bad = normalizeScenario(
+test('目标对象 API 名不再由界面配置：坏值被丢弃而不是把保存卡死', () => {
+  const result = normalizeScenario(
     { ...base, prePinnedContext: { ...base.prePinnedContext, defaultObjectApiName: 'Case-1' } },
     { existing: [] },
   );
-  assert.equal(bad.ok, false);
-  assert.ok(bad.errors.some((error) => error.field === 'prePinnedContext.defaultObjectApiName'));
+  assert.equal(result.ok, true);
+  assert.equal(result.card.prePinnedContext.defaultObjectApiName, undefined);
 });
 
-test('默认动作与表单入口只接受枚举值', () => {
-  const bad = normalizeScenario(
+test('默认动作与表单入口只做收敛：非法值回落 AUTO / STANDARD', () => {
+  const result = normalizeScenario(
     { ...base, prePinnedContext: { ...base.prePinnedContext, defaultAction: 'DELETE', formContextEntry: 'MODAL' } },
     { existing: [] },
   );
-  assert.equal(bad.ok, false);
-  const fields = bad.errors.map((error) => error.field);
-  assert.ok(fields.includes('prePinnedContext.defaultAction'));
-  assert.ok(fields.includes('prePinnedContext.formContextEntry'));
+  assert.equal(result.ok, true);
+  assert.equal(result.card.prePinnedContext.defaultAction, 'AUTO');
+  assert.equal(result.card.prePinnedContext.formContextEntry, 'STANDARD');
 });
 
 test('场景编码可由标题推导，冲突时追加序号', () => {
@@ -146,7 +145,8 @@ test('duplicateScenario 生成新编码与新指令', () => {
   assert.equal(copy.scenarioId, 'crm_crm_copy_2');
   assert.notEqual(copy.slashCommand, '/record');
   assert.match(copy.title, /副本/);
-  assert.equal(copy.isSystemBase, false);
+  // 旧「系统底座」标记已下线：副本也不再携带该字段。
+  assert.equal(copy.isSystemBase, undefined);
 });
 
 test('coerceStoredScenario 丢弃不合法卡片', () => {
