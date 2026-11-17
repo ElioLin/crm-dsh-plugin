@@ -14,6 +14,7 @@ const base = {
   title: 'CRM 单据新建与修改',
   description: '面向一线业务人员：按单据类型新建或修改记录，自动处理必填项与字段权限。',
   icon: 'briefcase',
+  businessSystem: 'CRM',
   category: '核心单据管控',
   slashCommand: '/record',
   enabled: true,
@@ -43,16 +44,49 @@ test('缺少场景介绍必须报错（该字段是卡片正文）', () => {
   assert.ok(result.errors.some((error) => error.field === 'description'));
 });
 
-test('缺少标题/分类/指令/开场语都会逐项报错', () => {
+test('缺少标题/业务系统/指令/开场语都会逐项报错', () => {
   const result = normalizeScenario(
-    { ...base, title: '', category: '', slashCommand: '', welcomeMessage: '' },
+    { ...base, title: '', businessSystem: '', slashCommand: '', welcomeMessage: '' },
     { existing: [] },
   );
   assert.equal(result.ok, false);
   const fields = result.errors.map((error) => error.field);
-  for (const field of ['title', 'category', 'slashCommand', 'welcomeMessage']) {
+  for (const field of ['title', 'businessSystem', 'slashCommand', 'welcomeMessage']) {
     assert.ok(fields.includes(field), `应报告 ${field}`);
   }
+});
+
+test('业务分类是选填：留空也能保存，只是不再当筛选维度', () => {
+  const result = normalizeScenario({ ...base, category: '' }, { existing: [] });
+  assert.equal(result.ok, true);
+  assert.equal(result.card.category, '');
+  assert.equal(result.card.businessSystem, 'CRM');
+  assert.equal(result.card.businessSystemKey, 'crm');
+});
+
+test('业务系统可自定义，并派生出安全的工作区目录 key', () => {
+  const custom = normalizeScenario({ ...base, businessSystem: '供应链中台' }, { existing: [] });
+  assert.equal(custom.ok, true);
+  assert.equal(custom.card.businessSystem, '供应链中台');
+  assert.match(custom.card.businessSystemKey, /^[a-z0-9-]+$/);
+
+  const tapd = normalizeScenario({ ...base, businessSystem: 'tapd' }, { existing: [] });
+  assert.equal(tapd.card.businessSystemKey, 'tapd');
+
+  const other = normalizeScenario({ ...base, businessSystem: '其他' }, { existing: [] });
+  assert.equal(other.card.businessSystemKey, 'other');
+
+  const forbidden = normalizeScenario({ ...base, businessSystem: 'A/B' }, { existing: [] });
+  assert.equal(forbidden.ok, false);
+  assert.ok(forbidden.errors.some((error) => error.field === 'businessSystem'));
+});
+
+test('1.6.x 老存档没有业务系统：coerce 时补成 CRM，而不是把卡片丢掉', () => {
+  const legacy = { ...base };
+  delete legacy.businessSystem;
+  const card = coerceStoredScenario({ ...legacy, scenarioId: 'crm_legacy', version: '1.0.0' });
+  assert.equal(card.businessSystem, 'CRM');
+  assert.equal(card.businessSystemKey, 'crm');
 });
 
 test('快捷指令规范化并拒绝重复', () => {

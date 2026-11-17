@@ -9,6 +9,7 @@ const card = {
   title: 'CRM 单据新建与修改',
   description: '按单据类型新建或修改记录，自动处理必填项与字段权限。',
   icon: 'briefcase',
+  businessSystem: 'CRM',
   category: '核心单据管控',
   slashCommand: '/record',
   enabled: true,
@@ -50,6 +51,39 @@ test('默认只注入场景与 Skill 名称，不带介绍与正文', () => {
   assert.match(text, /用 skill 工具逐个按名称加载正文/);
   // 名称模式下不出现「未预载」这类逐条标注。
   assert.ok(!text.includes('未预载'));
+});
+
+test('brief 模式只留一行唤醒：不带场景说明与技能列表', () => {
+  const text = buildContextBlock({ card, skills, mode: 'brief', injectionCount: 3 });
+  assert.ok(text.startsWith(`${CONTEXT_MARKER} scenario=crm_case mode=brief`));
+  assert.ok(text.includes('仍然生效'));
+  assert.ok(text.includes('3'));
+  assert.ok(text.includes('crm-core → crm-record-change'));
+  // 长内容一律不再重发。
+  assert.ok(!text.includes('## 场景说明'));
+  assert.ok(!text.includes('## 本场景的默认上下文'));
+  assert.ok(!text.includes(card.description));
+  assert.ok(!text.includes('CORE-BODY'));
+  assert.ok([...text].length < 260);
+  assert.ok([...text].length < [...buildContextBlock({ card, skills })].length);
+});
+
+test('预设填写模板：随消息提交时说明「不要复述」，未提交时提示用户补发', () => {
+  const withDraft = { ...card, inputDraft: '拜访对象：\n拜访目的：' };
+  const provided = buildContextBlock({ card: withDraft, skills, prefillProvided: true });
+  assert.ok(provided.includes('## 输入框预填模板'));
+  assert.ok(provided.includes('已经随用户消息一起提交'));
+  const absent = buildContextBlock({ card: withDraft, skills, prefillProvided: false });
+  assert.ok(absent.includes('## 输入框预填模板'));
+  assert.ok(absent.includes('没有把它一起发出来'));
+  // 没有 inputDraft 的卡片不该出现这一节。
+  assert.ok(!buildContextBlock({ card, skills }).includes('## 输入框预填模板'));
+});
+
+test('多场景叠加时说明本块只描述其中一个', () => {
+  const stacked = buildContextBlock({ card, skills, stackSize: 2 });
+  assert.ok(stacked.includes('同时叠加了 2 个场景'));
+  assert.ok(!buildContextBlock({ card, skills }).includes('同时叠加了'));
 });
 
 test('includeBodies + full 才带正文，reminder 不带正文只提醒', () => {

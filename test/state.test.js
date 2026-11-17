@@ -16,6 +16,7 @@ const card = {
   title: 'CRM 单据新建与修改',
   description: '按单据类型新建或修改记录。',
   icon: 'briefcase',
+  businessSystem: 'CRM',
   category: '核心单据管控',
   slashCommand: '/record',
   enabled: true,
@@ -120,8 +121,12 @@ test('激活记录数量超过上限时保留最新的', () => {
     };
   }
   const { doc } = sanitizeDoc({ version: 1, scenarios: [card], activations });
-  assert.equal(Object.keys(doc.activations).length, 200);
+  // 1.6.0 起上限降到 50：激活记录只是「这个会话还在用哪个场景」的短期状态，
+  // 200 条既占存档也没有产品意义（超过 24h 闲置的记录本来就会清掉）。
+  assert.equal(Object.keys(doc.activations).length, 50);
   assert.ok(doc.activations['s-0'] !== undefined);
+  assert.ok(doc.activations['s-49'] !== undefined);
+  assert.equal(doc.activations['s-50'], undefined);
   assert.equal(doc.activations['s-204'], undefined);
 });
 

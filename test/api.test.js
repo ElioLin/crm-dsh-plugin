@@ -19,6 +19,7 @@ const baseDraft = {
   title: 'CRM 单据新建与修改',
   description: '按单据类型新建或修改记录，自动处理必填项与字段权限。',
   icon: 'briefcase',
+  businessSystem: 'CRM',
   category: '核心单据管控',
   slashCommand: '/record',
   enabled: true,
@@ -314,9 +315,13 @@ test('激活场景后默认只注入技能名称，不带技能介绍与正文',
   assert.ok(!first.text.includes('CRM 通用运行指导'));
   assert.ok([...first.text].length < 1500);
 
+  // 同一会话的后续轮次只给一行「场景仍然生效」：场景说明与技能栈已经在上一次给过，
+  // 每轮重发整块是纯浪费 token（见 CHANGELOG 1.6.0 的注入分级）。
   const second = await api.prepareInjection('s1');
-  assert.equal(second.mode, 'names');
+  assert.equal(second.mode, 'brief');
   assert.ok(!second.text.includes('BODY-OF-crm-core'));
+  assert.ok(!second.text.includes('## 场景说明'));
+  assert.ok([...second.text].length < 260);
 
   const state = await api.activationState({ sessionId: 's1' });
   assert.equal(state.scenario.scenarioId, 'crm_crm');
@@ -334,6 +339,111 @@ test('显式打开 injectSkillBodies 后首次注入全文、之后只提醒', a
   const second = await api.prepareInjection('s1');
   assert.equal(second.mode, 'reminder');
   assert.ok(!second.text.includes('BODY-OF-crm-core'));
+  assert.ok(second.text.includes('仍然生效'));
+});
+
+test('同一会话可以叠加多个场景：注入块按栈顺序拼接，移除一个不影响其余', async () => {
+  const { api, store } = await makeApi();
+  await seedScenario(api);
+  const second = await api.saveScenario({
+    draft: { ...baseDraft, title: '文档规范', slashCommand: '/doc', pinnedSkills: ['crm-core'] },
+  });
+  assert.equal(second.ok, true, JSON.stringify(second));
+
+  const first = await api.activateScenario({ sessionId: 's1', scenarioId: 'crm_crm' });
+  assert.equal(first.ok, true);
+  assert.equal(first.scenarios.length, 1);
+
+  const stacked = await api.activateScenario({ sessionId: 's1', scenarioId: second.card.scenarioId, source: 'ui', stack: true });
+  assert.equal(stacked.ok, true, JSON.stringify(stacked));
+  assert.deepEqual(
+    stacked.scenarios.map((card) => card.scenarioId),
+    ['crm_crm', second.card.scenarioId],
+  );
+
+  const injection = await api.prepareInjection('s1');
+  assert.deepEqual(injection.cards.map((card) => card.scenarioId), ['crm_crm', second.card.scenarioId]);
+  // 两个场景各一个上下文块，用空行分隔。
+  assert.equal(injection.text.split('[[crm-workspace:context]]').length - 1, 2);
+
+  const removed = await api.deactivateScenario({ sessionId: 's1', scenarioId: 'crm_crm' });
+  assert.equal(removed.ok, true);
+  assert.equal(removed.removed, true);
+  assert.deepEqual(removed.scenarios.map((card) => card.scenarioId), [second.card.scenarioId]);
+  // 整条记录仍在，只是栈变短了。
+  assert.deepEqual(store.activation('s1').scenarios.map((entry) => entry.scenarioId), [second.card.scenarioId]);
+
+  const last = await api.deactivateScenario({ sessionId: 's1', scenarioId: second.card.scenarioId });
+  assert.equal(last.ok, true);
+  assert.equal(store.activation('s1'), undefined);
+});
+
+test('叠加超过单会话上限时拒绝，而不是悄悄截断', async () => {
+  const { api } = await makeApi();
+  await seedScenario(api);
+  const ids = ['crm_crm'];
+  for (let index = 0; index < 8; index += 1) {
+    const created = await api.saveScenario({
+      draft: { ...baseDraft, title: `场景${index}`, slashCommand: `/extra${index}`, pinnedSkills: [] },
+    });
+    ids.push(created.card.scenarioId);
+  }
+  await api.activateScenario({ sessionId: 's1', scenarioId: ids[0] });
+  let overflow;
+  for (const id of ids.slice(1)) {
+    overflow = await api.activateScenario({ sessionId: 's1', scenarioId: id, stack: true });
+    if (overflow.ok !== true) break;
+  }
+  assert.equal(overflow.ok, false);
+  assert.match(overflow.message, /上限|最多/);
+});
+
+test('第二次注入起只发 brief；预填模板随消息提交后不再复述原文', async () => {
+  const { api } = await makeApi();
+  const saved = await api.saveScenario({
+    draft: { ...baseDraft, inputDraft: '拜访对象：\n拜访目的：' },
+  });
+  await api.activateScenario({ sessionId: 's1', scenarioId: saved.card.scenarioId });
+
+  const first = await api.prepareInjection('s1', { promptText: `拜访对象：\n拜访目的：\n客户是华润` });
+  assert.ok(first.text.includes('已经随用户消息一起提交'));
+  assert.ok(first.text.includes('## 场景说明'));
+
+  const second = await api.prepareInjection('s1', { promptText: '继续' });
+  assert.equal(second.mode, 'brief');
+  assert.ok([...second.text].length < 260);
+  assert.ok(!second.text.includes('拜访对象：'));
+});
+
+test('诊断接口汇报版本、状态目录与激活栈', async () => {
+  const { api } = await makeApi();
+  await seedScenario(api);
+  await api.activateScenario({ sessionId: 's1', scenarioId: 'crm_crm' });
+
+  const report = await api.diagnostics({ sessionId: 's1', host: { version: '9.9.9', platform: 'win32' } });
+  assert.equal(report.ok, true);
+  assert.equal(report.plugin.id, 'crm-workspace');
+  assert.match(report.plugin.version, /^\d+\.\d+\.\d+$/);
+  assert.equal(report.host.version, '9.9.9');
+  assert.ok(typeof report.state.dataDir === 'string' && report.state.dataDir !== '');
+  assert.equal(report.state.activations, 1);
+  assert.equal(report.state.degraded, false);
+  assert.deepEqual(report.session.scenarios.map((row) => row.scenarioId), ['crm_crm']);
+  assert.equal(report.session.scenarios[0].present, true);
+  assert.equal(report.session.scenarios[0].injected, 0);
+  assert.equal(report.config.injectSkillsOnStep, true);
+  assert.equal(report.lifecycle.ttlHours, 168);
+  assert.equal(report.lifecycle.idleHours, 24);
+});
+
+test('pruneActivations 清掉闲置记录并返回计数', async () => {
+  const { api, store } = await makeApi();
+  await seedScenario(api);
+  await api.activateScenario({ sessionId: 's1', scenarioId: 'crm_crm' });
+  const result = await api.pruneActivations({ now: Date.now() + 8 * 24 * 60 * 60 * 1000 });
+  assert.equal(result.ok, true);
+  assert.equal(result.removed, 1);
+  assert.equal(store.activation('s1'), undefined);
 });
 
 test('未激活的会话不注入，关闭开关后也不注入', async () => {
@@ -1117,11 +1227,35 @@ test('新会话带入的客户端契约：场景引用、开场引导、预设�
   assert.ok(source.includes('(v${card.version ?? \'1.0.0\'})'));
   assert.ok(source.includes("callHost('activation.state'"));
   assert.ok(source.includes('writeDraft(draftText)'));
-  assert.ok(source.includes('seed.reference'));
+  // 预填只写「填写模板」：不再拼一行 `/场景标题` 假指令（1.6.0 起场景身份只由
+  // 注入块与状态栏表达）。这里断言旧的拼接彻底消失，新逻辑由纯函数承担。
+  assert.ok(!source.includes('seed.reference'));
+  assert.ok(!source.includes("const raw = title === ''"));
+  assert.ok(source.includes('seededDraftTextFor'));
+  assert.ok(source.includes('shouldClearSeededDraft'));
   assert.ok(source.includes('crmw-guide'));
   assert.ok(source.includes('inputActions.addAttachments(ids)'));
   assert.ok(source.includes('复制为本地场景'));
   assert.ok(source.includes('设为插件标准场景'));
+  // 预填还有一条不依赖输入框 slot 的路径：面板直接写进会话输入框并回读确认。
+  assert.ok(source.includes('seedComposer(ctx, sessionId, {'));
+  assert.ok(source.includes('conversation?.input?.for?.(scope)'));
+  // 预设附件与草稿一起进托盘（面板侧，不依赖 dock）。
+  assert.ok(source.includes('conversation.createDrafts(sessionId, files)'));
+  assert.ok(source.includes('facade.addAttachments(ids)'));
+  // /指令 回车走客户端动作：激活 + 提示，而不是只清空输入框。
+  assert.ok(source.includes('commandUi.decorate('));
+  assert.ok(source.includes('runScenarioCommand'));
+});
+
+test('进入场景 = 开一段新对话：空白会话复用，有内容的会话新建', async () => {
+  const source = await readFile(new URL('../lib/client.js', import.meta.url), 'utf8');
+  assert.ok(source.includes('function isBlankSession('));
+  assert.ok(source.includes('ensureScenarioSession'));
+  assert.ok(source.includes('const candidate = resumableSessionId(ctx)'));
+  assert.ok(source.includes("byId[sessionId]?.blank === true"));
+  // 不再用「当前显示会话」直接激活：有内容时必须走新建。
+  assert.ok(!source.includes('const sessionId = await ensureSession(ctx)'));
 });
 
 test('进入场景必须落在主面板正在显示的会话上，而不是后台新建的隐形会话', async () => {
@@ -1136,6 +1270,24 @@ test('进入场景必须落在主面板正在显示的会话上，而不是后�
   assert.ok(!source.includes('const created = await uiWorkspace.startSession'));
   // 激活/退出后主动广播，输入框徽标与预填不用等下一轮轮询。
   assert.ok(source.includes('crm-workspace:activation'));
+});
+
+test('退出场景：对话页徽标可移除，文档里也提供 /退出场景 兜底指令', async () => {
+  const client = await readFile(new URL('../lib/client.js', import.meta.url), 'utf8');
+  // 宿主的 useInput 是「带 selector 的 useSelector」：空参调用会一路传到 memoizedSelector，
+  // 抛 `TypeError: selector is not a function`，把 conversation.input.dock 的条目整个打崩，
+  // 徽标与「退出场景」按钮会一起消失。
+  assert.ok(client.includes('useInput((snapshot) => snapshot)'));
+  assert.ok(!client.includes('useInput()'));
+  // 退出时撤掉预填的 `/场景名称`：留着的话下一次回车又会把场景激活回来。
+  assert.ok(client.includes('clearSeededDraft'));
+  assert.ok(client.includes("callHost('activation.clear', { sessionId })"));
+  // 预填只写一次：写进去（或输入框本来就有内容）之后，用户删空也不再回填。
+  assert.ok(client.includes('draftSettled'));
+
+  const host = await readFile(new URL('../lib/index.js', import.meta.url), 'utf8');
+  assert.ok(host.includes('EXIT_COMMAND'));
+  assert.ok(host.includes('api.clearActivation({ sessionId })'));
 });
 
 test('无标准场景管理权限时抽屉不渲染发布入口', async () => {

@@ -61,8 +61,10 @@ test('方法白名单只包含登记过的接口', () => {
   assert.deepEqual([...table.keys()].sort(), [
     'activation.activate',
     'activation.clear',
+    'activation.deactivate',
     'activation.state',
     'bootstrap',
+    'diagnostics',
     'preview.injection',
     'registry.list',
     'scenario.attachment.save',
@@ -79,6 +81,7 @@ test('方法白名单只包含登记过的接口', () => {
     'scenario.save',
     'scenario.sync',
     'skills.list',
+    'workspace.ensure',
   ]);
 });
 
@@ -326,4 +329,40 @@ test('附件路由：非 GET/HEAD 405，非回环来源 403 且不读文件', as
   await handler(assetReq('/crm-workspace/asset/a.docx', { host: 'evil.example.com' }), forbidden);
   assert.equal(forbidden.captured.status, 403);
   assert.equal(reads, 0);
+});
+
+test('activation.activate 透传 stack，deactivate / diagnostics / brief 预览都有入口', async () => {
+  const calls = [];
+  const api = {
+    async activateScenario(params) {
+      calls.push(['activate', params]);
+      return { ok: true };
+    },
+    async deactivateScenario(params) {
+      calls.push(['deactivate', params]);
+      return { ok: true };
+    },
+    async diagnostics(params) {
+      calls.push(['diagnostics', params]);
+      return { ok: true };
+    },
+    async previewInjection(params) {
+      calls.push(['preview', params]);
+      return { ok: true, mode: 'brief' };
+    },
+  };
+  // 处理器闭包捕获的是 createDispatchTable 时传入的 api，第一个参数只是签名占位。
+  const table = createDispatchTable(api);
+
+  await table.get('activation.activate')(api, { sessionId: 's1', scenarioId: 'c1', stack: true, source: 'ui' });
+  await table.get('activation.activate')(api, { sessionId: 's1', scenarioId: 'c1' });
+  await table.get('activation.deactivate')(api, { sessionId: 's1', scenarioId: 'c1' });
+  await table.get('diagnostics')(api, { sessionId: 's1', host: { version: '1.6.0' } });
+  await table.get('preview.injection')(api, { scenarioId: 'c1', mode: 'brief' });
+
+  assert.deepEqual(calls[0], ['activate', { sessionId: 's1', scenarioId: 'c1', source: 'ui', stack: true }]);
+  assert.equal(calls[1][1].stack, false, '没传 stack 时必须显式传 false，避免 undefined 被当成叠加');
+  assert.deepEqual(calls[2], ['deactivate', { sessionId: 's1', scenarioId: 'c1' }]);
+  assert.equal(calls[3][1].host.version, '1.6.0');
+  assert.equal(calls[4][1].mode, 'brief');
 });

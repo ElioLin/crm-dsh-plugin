@@ -12,6 +12,7 @@ const scenarioDraft = {
   title: 'CRM 单据新建与修改',
   description: '按单据类型新建或修改记录，自动处理必填项与字段权限。',
   icon: 'briefcase',
+  businessSystem: 'CRM',
   category: '核心单据管控',
   slashCommand: '/record',
   enabled: true,

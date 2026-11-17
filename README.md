@@ -1,4 +1,4 @@
-# CRM 智能工作台 (CRM Workspace Hub)
+# 场景工作台 (CRM Workspace Hub)
 
 面向 Salesforce / SFOA 一线业务人员的 Deepseek Harness (RUNAI) 插件：**动态场景容器 + 显式 Skill 组装器**。
 
@@ -16,6 +16,7 @@
 | 已安装标准场景按 `revision/version` 自动静默升级，并按 `sha256` 增量更新附件 | 不重复下载哈希未变的附件 |
 | 普通用户对标准场景只读，可「复制为本地场景」后自由编辑 | 不直接修改普通用户本地的标准场景副本 |
 | 点卡片 = 按序装配该卡片的 Skill 栈 | 不扫描全量 Skill 让模型自己挑 |
+| 点卡片 = 开一段新对话（当前会话空白则复用，有消息则新建） | 不把场景硬塞进已有对话 |
 | 把场景说明/附件约定/Skill 名称注入模型请求 | 不修改、不覆盖用户自己的提问 |
 | 新会话输入框上方常驻「正在使用场景」徽标（含切换/退出） | 不用消息气泡伪造场景状态 |
 | 新会话里以「场景开场」卡片呈现开场引导语 | 不替换宿主自己的空态标题（`小犇，我帮你` 属于 DSH，需改 DSH 侧） |
@@ -24,7 +25,7 @@
 | 注入块里声明附件边界，禁止把预设附件上传到 CRM 单据 | 不静默上传任何文件 |
 | 场景包导出/导入（`.crm-scenario.json`，附件内联） | 不导出存档里的其他场景或用户数据 |
 | 有标准场景管理权限的用户通过 MCP 控制平面创建/编辑/软删除标准场景 | 无权限时抽屉里连「设为插件标准场景」都不出现，只保存本地并说明原因 |
-| 把每张卡片的 `slashCommand` 注册成真正的 Host 指令 | 不在卡片里直接执行 DML/查询 |
+| 把每张卡片的 `slashCommand` 注册成真正的 Host 指令，并挂客户端动作（回车即激活 + 提示） | 不在卡片里直接执行 DML/查询 |
 | 默认只给 Skill 名称（正文由 `skill` 工具按序加载），可配置改为直填正文 | 不把 Skill 介绍/正文复述给用户，也不写进会话历史 |
 | 会话标题栏显示「场景 · 标题」标签 | 不伪造聊天消息来表达场景 |
 | 存档原子落盘、损坏隔离、版本保护 | 不在存档损坏时静默覆盖用户配置 |
@@ -79,7 +80,9 @@ export interface ScenarioCardConfig {
   title: string;               // 卡片标题
   description: string;         // 【必填】管理员填写的场景介绍，显示在卡片正文
   icon: string;                // 图标标识（12 个内置图标之一）
-  category: string;            // 业务分类标签
+  businessSystem: string;      // 【必填】业务系统：CRM / TAPD / 其他，或任何自定义系统名
+  businessSystemKey?: string;  // 由 businessSystem 派生的目录 key（crm / tapd / other / 自定义 slug）
+  category: string;            // 【选填】业务分类备注，不再参与过滤，也不再拦保存
   slashCommand: string;        // 快捷指令，如 "/record"
   enabled: boolean;            // 是否在运行态展示/可被指令唤醒
   pinnedSkills: string[];      // 显式绑定的 Skill 标识，数组顺序 = 执行顺序
@@ -115,7 +118,7 @@ export interface ScenarioCardConfig {
 
 落盘时的字段顺序与之完全一致；`scenarioId` 可由标题自动推导（纯中文标题会退化为 `crm_scene`，冲突时追加 `_2`、`_3`）。
 
-`inputDraft` 与 `welcomeMessage` 的分工：`welcomeMessage` 是「场景开场引导」，在还没有消息的新会话里渲染成输入框上方的引导卡片；`inputDraft` 是「输入框预填」，写进输入框时会在第一行带上 `/场景名称` 引用标记。`inputDraft` 留空时不预填正文（`activation.state` 的 `draft.source` 会回落到 `welcomeMessage`，仅供旧客户端兼容）。
+`inputDraft` 与 `welcomeMessage` 的分工：`welcomeMessage` 是「场景开场引导」，在还没有消息的新会话里渲染成输入框上方的引导卡片；`inputDraft` 是「输入框预填」，原样写进输入框（1.6.0 起不再在第一行带 `/场景名称` 引用标记）。`inputDraft` 留空时不预填正文（`activation.state` 的 `draft.source` 会回落到 `welcomeMessage`，仅供旧客户端兼容）。
 
 `prePinnedContext` 只剩「允许附件」一个可配置项。目标对象 API 名、默认动作、表单入口**不再由管理员配置**：不同单据、不同入口本来就该由模型结合用户当次的描述与可用工具现场判断，预先钉死一个默认值只会误导执行。这三个字段仍有默认值并被写进 MCP 写请求（服务端 zod 要求），但界面不再展示、注入块也不再引用。
 
@@ -145,7 +148,7 @@ Copy-Item -Recurse -Force D:\GitProject\crm-dsh-plug `
 
 重启后：
 
-- 侧边栏出现「CRM 智能工作台」入口（可在配置里用 `showSidebarEntry: false` 隐藏）；
+- 侧边栏出现「场景工作台」入口（可在配置里用 `showSidebarEntry: false` 隐藏）；
 - 面板打开后是**空状态**——这是设计如此，没有任何演示卡片。点「新建场景」开始配置。
 
 ### 配置项（`cordis.patch.yml` 或插件配置）
@@ -153,6 +156,7 @@ Copy-Item -Recurse -Force D:\GitProject\crm-dsh-plug `
 | 键 | 默认值 | 说明 |
 | --- | --- | --- |
 | `dataDir` | `<profile>/crm-workspace` | 存档目录，支持相对 profile 的路径或绝对路径 |
+| `workspaceRoot` | `<dataDir>/workspaces` | 业务系统工作区的父目录：每个系统一个子目录（`crm` / `tapd` / …）。进入场景时若对应工作区不存在，会在这里建目录并建工作区 |
 | `maxScenarioCards` | `200` | 场景卡片上限（1–200），超出时后端拒绝新建 |
 | `injectSkillsOnStep` | `true` | 关掉后点卡片仍会激活，但不向模型注入任何内容 |
 | `injectSkillBodies` | `false` | 是否把 Skill 正文直接写进注入块。默认 `false`：只注入名称，正文由模型用 `skill` 工具按顺序加载 |
@@ -170,7 +174,7 @@ Copy-Item -Recurse -Force D:\GitProject\crm-dsh-plug `
 
 **身份是自动的**：插件启动时按 `config → 环境变量 → <DSH_HOME>/.env → identity.json` 解析 `internal_bearer` 凭据（部署客户端 Token + 登录用户薪号），并把它作为 `Authorization: Bearer <Token>` + `X-Platform-User-Id: <薪号>` 发给 MCP 控制平面；这台机器没有内部凭据时才回退 Buntu Token。因此用户不需要在配置里粘贴任何 token，换人登录后一分钟内自动跟随。
 
-**为什么需要 `skillCatalogDir`**：DSH 的 `skills` 服务是**分层**注册表，插件运行在 Host 根作用域，只能看到全局层（内置 bundled Skill）。公司 Skill（`crm-core`、`crm-record-change` 等）挂在 agent preset 层，根视图看不到。插件因此额外读取一份**只读**的目录表作为兜底：只解析 `SKILL.md` 的 `name/description` 与正文，不注册进注册表、不参与路由，失败静默降级。可选项里仍然可以手动输入任意 Skill 名——即使目录里也没有，注入块会明确写「未预载」并要求模型用 `skill` 工具自行加载，绝不谎称该 Skill 不存在。
+**为什么需要 `skillCatalogDir`**：DSH 的 `skills` 服务是**分层**注册表，插件运行在 Host 根作用域，只能看到全局层（内置 bundled Skill）。公司 Skill（`crm-core`、`crm-record-change` 等）挂在 agent preset 层，根视图看不到。插件因此额外读取一份**只读**的目录表作为兜底：只解析 `SKILL.md` 的 `name/description` 与正文，不注册进注册表、不参与路由，失败静默降级。技能栈只能绑定**本地已有的 Skill**（列表对所有人可读）：输入名称会出现候选，回车加第一条或直接点候选；敲一个列表里没有的名字会提示「本地没有名为「x」的 Skill」，不会把一个模型加载不到的 Skill 写进栈里。真要引用目录外的 Skill，先把它装进 DSH，再回来绑定。
 
 ---
 
@@ -187,10 +191,13 @@ Copy-Item -Recurse -Force D:\GitProject\crm-dsh-plug `
 | `scenario.enable` | `{ scenarioId, enabled }` | 启停 |
 | `scenario.move` | `{ scenarioId, direction: 'up'\|'down' }` | 排序 |
 | `scenario.duplicate` | `{ scenarioId }` | 复制为新卡片（新编码、新指令） |
-| `activation.activate` | `{ sessionId, scenarioId, source }` | 激活场景并返回解析后的技能栈 |
-| `activation.state` | `{ sessionId }` | 当前会话正处在哪个场景；`draft` 带回 `reference`（`/场景名称`）、`welcome`（开场引导）、`inputDraft` 与可拉取的附件 URL |
-| `activation.clear` | `{ sessionId }` | 退出场景 |
-| `preview.injection` | `{ scenarioId, mode?: 'full'\|'reminder' }` | 管理员预览模型到底会看到什么；返回 `mode` 与 `characters`，未开 `injectSkillBodies` 时恒为 `names` |
+| `activation.activate` | `{ sessionId, scenarioId, source, stack? }` | 激活场景并返回解析后的技能栈；`stack: true` 时**叠加**到当前会话（上限 `maxScenariosPerSession` = 8），默认替换整栈 |
+| `activation.state` | `{ sessionId }` | 当前会话的激活栈：`scenarios` 是卡片数组（栈首另有兼容字段 `scenario`）；`draft` 带回 `reference`（`/场景名称`，仅供展示，1.6.0 起不再写进输入框）、`welcome`（开场引导）、`inputDraft` 与可拉取的附件 URL |
+| `activation.deactivate` | `{ sessionId, scenarioId }` | 从激活栈里**只摘掉一个**场景；摘空即等同于退出 |
+| `activation.clear` | `{ sessionId }` | 退出场景（清整栈） |
+| `workspace.ensure` | `{ system }` | 按业务系统找到/创建对应工作区，返回 `{ workspace: { workspaceId, path, title }, created, key }`；标题或目录命中即复用 |
+| `diagnostics` | `{ sessionId?, host? }` | 插件诊断：版本、数据目录、存档版本、场景/激活计数、注入开关、当前会话激活栈、客户端上报的 slot 崩溃 |
+| `preview.injection` | `{ scenarioId, mode?: 'full'\|'reminder'\|'brief' }` | 管理员预览模型到底会看到什么；返回 `mode` 与 `characters`。未开 `injectSkillBodies` 时首次为 `names`、后续为 `brief` |
 | `scenario.attachment.save` | `{ fileName, mimeType?, dataBase64 }` | 上传场景预设附件到 `<dataDir>/attachments/`，返回 `{ attachment, url }` |
 | `registry.list` | `{ refresh? }` | 调用 `GET /api/dsh/scenarios?includeDeleted=true`，同步公司标准场景并静默升级/卸载本地已安装标准场景 |
 | `scenario.permission` | `{ refresh? }` | 调用 `GET /api/dsh/scenarios/permission`；前端只认 `auth.canManageStandardScenario` |
@@ -261,20 +268,54 @@ Copy-Item -Recurse -Force D:\GitProject\crm-dsh-plug `
 
 「执行要求」里还有一条对应的复述。这样即使用户在对话里说「把附件传上去」，模型也不会把模板文件当成业务材料。
 
+**进入场景先落到业务系统的工作区**（1.7.0）：每张卡片都必须声明 `businessSystem`（CRM / TAPD / 其他，或自定义名）。
+点「进入场景」时客户端先调 `workspace.ensure`，按「标题 = 业务系统名 → 标题 = key → 目录 = `<workspaceRoot>/<key>`」的顺序
+找已有工作区：命中就直接用，一个都没有就建目录 + 建工作区（标题改成业务系统名），然后**在这个工作区里**拿一个空白会话
+（有就复用，没有就新建）。所以 CRM 场景永远落在 CRM 工作区，TAPD 场景落在 TAPD 工作区，不会都堆在用户随手打开的那个目录里。
+
+叠加（`stack: true`）走同一条前置：当前会话已经在目标工作区 → 直接叠；不在 → 先在目标工作区开一段会话再叠
+（否则「叠加」会静默把 CRM 场景带进 TAPD 的工作区）。宿主不提供工作区服务时降级为原行为，只在面板上提示一句。
+
+**跨业务系统不能叠加**：会话是按业务系统分域的，一个对话里同时跑 TAPD 与 CRM 场景，会让注入块出现两套
+系统上下文，也说不清这段会话属于哪个工作区。所以叠加前会比对当前栈里已激活场景的业务系统，不一致就
+直接拦下并提示「请先退出当前场景」，不会静默替换掉原有场景。要换系统就单独「进入场景」（会在目标系统的
+工作区另开一段对话）。
+
 **新会话的四个联动**（`conversation.input.dock` + `inputActions` / `conversation` 服务）：
 
-1. 输入框正上方常驻状态条：`🟢 正在使用场景：【<标题>】 | 挂载技能：a + b`，右侧 [切换场景]（打开工作台面板）与 [× 退出场景]（清激活）。只要它存在，该会话后续每条消息都会经过 pre-step 注入。
-2. 新会话（`session.blank === true`）里再叠一张「场景开场」卡片：场景图标 + `/场景名称` + `welcomeMessage`。它是 UI 投影，不写会话历史、不产生消息气泡，用户发出第一条消息后自动消失。
-3. 输入框预填：第一行是 `/场景名称` 引用标记，其后是管理员填的 `inputDraft`（用 `inputActions.setDraft` 写入，光标落末尾、可撤销）；已经键入过草稿的会话不会被覆盖。
-4. 预设附件逐个从资产路由取回 → `conversation.createDrafts()` → `inputActions.addAttachments()`，进入官方待发送附件托盘（显示文件名与「场景内置附件」标签），随首条消息一起发送。
+1. 输入框正上方常驻状态条：1 个场景时是 `🟢 正在使用场景：【<标题>】 | 挂载技能：a + b`；叠加多个场景时标题变成「正在使用 2 个场景」，下面按栈序列出每个场景一个 chip。右侧 [切换场景]（打开工作台面板）与 [× 退出场景]（清整栈）；每个 chip 上另有一个 `×`，可以**只移除那一个**场景。只要状态条还在，该会话后续每条消息都会经过 pre-step 注入。
+2. 新会话（`session.blank === true`）里再叠一张「场景开场」卡片：场景图标 + `welcomeMessage`。它是 UI 投影，不写会话历史、不产生消息气泡，用户发出第一条消息后自动消失。
+3. 输入框预填：只写管理员填的 `inputDraft`（填写模板），**不再带 `/场景名称` 首行**（原因见下）。写入有两条独立路径——面板在激活后直接 `conversation.input.for(sessionScope).setDraft()` 并回读确认（不依赖输入框组件是否挂载），`conversation.input.dock` 组件挂载后再兜一次（用 `inputActions.setDraft`）；两处都只在输入框为空时写**一次**，写完即记为已就位——用户之后把内容全选删掉也不会被回填，更不会覆盖用户已经输入的内容，失败会在面板上弹错误提示。
+4. 预设附件进待发送托盘：面板在激活后把 `presetAttachments` 的字节从资产路由取回、`conversation.createDrafts(sessionId, files)` → `facade.addAttachments(ids)`，回读 `attachmentIds` 确认；`conversation.input.dock` 挂载后再兜一次（托盘里已有附件就跳过，不会重复挂）。托盘里显示文件名与「场景内置附件」标签，随首条消息一起发送。退出场景或单独移除时，这些草稿 id 会走 `conversation.discardDrafts` 回收，不在会话里留孤儿文件。
+
+**退出与移除的四种路径**（缺任何一种都会让用户「引入之后删不掉」）：状态条上的 [× 退出场景]（清整栈）、每个场景 chip 上的 `×`（只移除该场景）、工作台面板顶部的 [退出全部场景] / 当前场景条上的 `×`、以及在输入框里敲 `/crm-exit`。退出会清掉该会话的激活记录，并把预填内容里仍属于我们的那一段撤掉（用户自己改过的正文保留）。<br>`/crm-exit` 与 `/crm-doctor` 的名字只能是 ASCII：宿主 `commands.register` 只接受 `/^[a-z][a-z0-9_-]*$/u`，中文只能出现在指令描述里。
+
+**注入是分级的**（`injectSkillsOnStep` 打开时）：首次注入 `names`（场景说明 + 默认上下文 + 预设附件 + 技能栈名称 + 执行要求）；**同一会话的后续轮次改发 `brief`**，只留一行「场景仍然生效 + 技能栈顺序 + 沿用首次说明」。开了 `injectSkillBodies` 时首次是 `full`（含 Skill 正文），之后是 `reminder`。所以「进入场景」并不等于把面板里预览的那份全文每轮都提交一次——只有第一轮是全文，之后是几百字符的提醒。
+
+**面板页脚与诊断**：面板底部显示 `场景工作台 · 客户端 v<CLIENT_VERSION> · 宿主 v<PLUGIN_VERSION>`，两边版本对不上（改了客户端没刷新页面）一眼能看出。旁边的 [诊断] 按钮拉 `diagnostics`：版本、数据目录、存档版本、场景/激活计数、注入开关、当前会话激活栈，以及客户端捕获到的 slot 崩溃记录。命令行也可以敲 `/crm-doctor` 拿到同样的摘要。
+
+> 状态条依赖宿主注入的 `useInput` hook，它其实是「带 selector 的 `useSelector`」（宿主源码里写作 `useInput((s) => s)`）。传空参会在内部抛 `TypeError: selector is not a function`，宿主随即把整个 `conversation.input.dock` 槽条目判为崩溃并吞掉——徽标、退出按钮、开场卡片会一起消失。1.5.4 修的就是这个。
 
 > 徽标只注册一个 slot（`conversation.input.dock`，order 20），不替换 `conversation.input.attachments` 这类官方单占位槽，因此不会遮蔽原生附件 UI。
 
 **宿主空态标题改不了**：新会话里那行「小犇，我帮你…」是 DSH 自己的空会话标题（`HeroShell` 的 `hero.headline`），只对插件开放了品牌标记（`conversation.hero.brand.mark`）与工作区选择两个插槽，没有替换标题的插槽。因此插件只能在同一个位置补一张「场景开场」卡片，**要改那行文案本身必须改 DSH 的本地化/品牌配置或源码**。
 
-**场景引用标记为什么用 `/标题` 而不是 `/指令`**：`/record` 这类真实指令在 DSH 里回车会被当成命令执行（正文变参数、不会发给模型）。预填用场景标题（如 `/客户拜访纪要`）只是文本标记；万一标题恰好是纯 ASCII 且与某条指令同名，Host 会加「场景」前缀（`场景/record`）避免被当成指令。
+**预填为什么只写模板、不再带 `/场景名称`**：1.6.0 之前预填第一行是 `/场景名称` 引用标记。它有两个问题：一是那行字**不是用户说的话**，回车后会被模型当成用户自己输入的指令；二是标题含中文或空格时宿主根本收不成 chip，只是普通文本，白白占一行。现在场景身份由注入块（`scenario=<id>`）与输入框上方的状态条表达，输入框里只留管理员写的填写模板。`activationState.draft.reference` 仍返回，但只用于展示。
 
-**激活落在哪个会话上**：「进入场景」优先用主面板正在显示的会话（`uiSession.adapter.current`，即 `retainedBy.mainView > 0` 的那个）；打开工作台时对话面板会被卸载、当前绑定变空，此时回退到「最近显示过的会话」；两者都没有才新建，并且用 `uiWorkspace.openSession()` 把界面切过去。`sessions.list` 快照里没有 `current` 字段，也不能用 `ctx.sessions.open()` —— 这是 1.5.1 修掉的坑。
+> 1.6.0 起每个 slot 条目（面板、会话标题标签、输入框上方状态条）各自包了一层 `SlotBoundary`：某个条目渲染失败只把它自己降级成一条黄色提示（带 [重试]），不会像 1.5.4 之前那样整个 dock 槽条目被宿主吞掉。失败原因会记进诊断弹层。
+
+**`/指令` 回车为什么现在有反馈了**：宿主把卡片的 `slashCommand` 注册成真正的 Host 指令后，裸回车（无参数）只会在服务端跑 handler——客户端把 token 吃掉、界面上没有任何输出，看起来像「输入框被清空、场景没进来」。客户端因此用 `commandUi.decorate()` 给同名指令挂了一个**动作**：回车/菜单选中即调用 `activation.activate`，弹一条「已切换到「XX」场景：技能栈…」的提示，并广播 `crm-workspace:activation` 让徽标与开场卡片立刻刷新。宿主 handler 保留给非 UI 入口。
+
+**激活落在哪个会话上**：`currentSessionId` 按 `uiSession.adapter.current`（`retainedBy.mainView > 0` 的那个会话）解析；工作台把对话面板顶掉、当前绑定变空时回退到 `lastSessionId`（最近真正显示过的会话）。进入场景时，如果这个会话本来就是空白会话就直接复用，否则新建一个空白会话再激活——所以「进入场景」永远是一段新对话。导航统一用 `uiWorkspace.openSession()`。`sessions.list` 快照里没有 `current` 字段，`ctx.sessions` 上也没有 `open` —— 这是 1.5.1/1.5.2 修掉的坑。
+
+**面板按业务系统过滤**：工具条上的 chip 是业务系统（CRM / TAPD / 其他 + 卡片里出现的自定义系统），不再是业务分类。
+三个预设值即使还没有对应卡片也会列出来，否则用户要在做出第一张 CRM 场景之前根本点不到「CRM」这个筛选项。
+业务分类降级成选填的备注，只参与搜索、不参与过滤。
+
+**新建场景的默认值**：业务系统预填 `CRM`（必填项给个起点，要建 TAPD 场景再改），
+**「允许附件」默认勾选**（存档里缺省仍是 `false`，兼容 1.6.x 老卡片）。技能栈不再有「追加」按钮：
+输入名称出候选、回车加第一条、或直接点候选；敲一个本地没装的名字会报「本地没有名为「x」的 Skill」，
+不会把一个模型加载不到的 Skill 写进栈里。
 
 **场景名在对话里可见**：插件在会话标题栏注册一个「场景 · <标题>」标签（`conversation.session.header.actions`，order 30），每 8 秒轮询当前会话的激活状态（页面隐藏时暂停），点击标签直接打开工作台面板。标签是 UI 投影，不写会话历史、不产生消息气泡、不消耗模型调用。
 
@@ -289,15 +330,23 @@ Copy-Item -Recurse -Force D:\GitProject\crm-dsh-plug `
 | 面板提示「只读模式」 | 存档损坏或版本高于插件 | 日志/面板里有具体文件路径；损坏文件已被重命名为 `state.corrupt-<时间戳>.json`，确认后删除 `state.json` 重启即可 |
 | 点卡片后模型没看到场景 | `injectSkillsOnStep: false`，或激活发生在上一条消息发送之后 | 打开配置开关；重新发送一条消息即可（激活状态持久化在存档里） |
 | `/record` 指令不存在 | 卡片 `enabled: false`，或指令名与内置指令冲突 | 启用卡片；换一个 `slashCommand` |
+| `/指令` 回车后输入框清空、场景没反应 | 1.5.3 之前裸回车只跑服务端 handler，客户端没有任何输出 | 升级到 1.5.3+：客户端动作会激活并弹提示；仍无反应说明卡片停用或指令名与内置指令冲突 |
 | 技能栈里出现「未预载正文」 | 该 Skill 不在 Host 根视图，也不在 `skillCatalogDir` 目录里，且 `injectSkillBodies: true` | 正常降级：注入块会要求模型用 `skill` 工具按名加载；想让它预载正文，把 `skillCatalogDir` 指到公司 Skill 根目录。默认（不注入正文）不会出现该标注 |
 | 会话标题旁没有「场景 · …」标签 | 该会话没有激活场景，或页面还是旧的客户端模块 | 在面板里点一张卡片；客户端改动需刷新页面（Ctrl+R） |
 | 输入框上方没有场景徽标 | 该会话未激活场景，或客户端模块未刷新 | 从面板「进入场景」；刷新页面 |
 | 新会话里看不到「场景开场」卡片 | 会话已经有消息（只在空白会话显示），或卡片没有填 `welcomeMessage` | 新建一个会话再进入场景；在卡片里补开场引导语 |
 | 新会话顶部仍是「小犇，我帮你」 | 那是 DSH 自己的空会话标题（`hero.headline`），没有对插件开放替换插槽 | 插件只能在同位置补一张「场景开场」卡片；要改那行字必须改 DSH 侧的品牌/本地化配置或源码 |
-| 输入框没有被预填草稿 | 用户已经键入过内容（不会被覆盖）、`inputDraft` 为空，或（1.5.1 之前）激活被写到了一个用户看不见的后台会话上 | 升级到 1.5.1+；清空输入框后重新进入场景；或在卡片里补 `inputDraft`（开场引导语只进卡片、不写输入框） |
-| 进入场景后多出一个空会话 | 1.5.1 之前 `currentSessionId` 读不到当前会话，`ensureSession` 每次都新建 | 升级到 1.5.1+：现在按 `uiSession` 的 main 绑定解析当前会话，工作台面板打开时回退到「最近显示过的会话」 |
-| 预填内容第一行的 `/场景名` 被当成指令 | 场景标题是纯 ASCII 且与某条指令同名（Host 已加「场景」前缀兜底） | 给场景换一个中文标题，或改一个不与指令同名的小写标题 |
-| 预设附件没进托盘 | 附件下载失败（远端 404/超时），或客户端拿不到 `conversation` 服务 | 看 Host 日志；把 `localPathOrUrl` 换成本地资产后重新保存卡片 |
+| 输入框没有被预填草稿 | 用户已经键入过内容（不会被覆盖）、`inputDraft` 为空，或（1.5.1 之前）激活被写到了一个用户看不见的后台会话上 | 升级到 1.5.2+；清空输入框后重新进入场景；面板会弹「预填没写进去」的提示说明是会话没就绪 |
+| 进入场景后多出一个空会话 | 1.5.1 之前 `currentSessionId` 读不到当前会话，`ensureSession` 每次都新建 | 升级到 1.5.2+：空白会话直接复用，只有当前会话已有消息时才新建 |
+| 输入框里出现 `/场景名` 那行字 | 1.6.0 之前预填会带 `/场景名称` 引用首行 | 升级到 1.6.0+：预填只写 `inputDraft`；旧会话里残留的那行可用 [× 退出场景] 清掉 |
+| 进了新场景，输入框里还是上一个场景的模板 | 宿主切换会话时会把上一段会话的草稿「搬」过来（`rebindDraftFiles`）；1.6.0 之前插件把它当成用户输入保留 | 升级到 1.6.0+：`seedConflict` 把「我们写过的模板」与「所有场景的填写模板」都认作已知模板，空白会话里的这类文本会被换成这次场景的模板；用户自己打的字仍然不动。旧会话里残留的可手动清空 |
+| 想在一个对话里用两个场景 | 1.6.0 之前一个会话只能有一个激活 | 用卡片上的 [＋ 叠加]（或在面板当前场景条里逐个 `×` 移除）；上限 8 个 |
+| 叠加时提示「跨业务系统不能叠加」 | 当前对话里已经有别的业务系统的场景；会话是按业务系统落在各自工作区的 | 先退出当前场景，再单独进入新场景（会落到它自己的业务系统工作区）；确实要在同一对话里跑多个场景时，只叠同一个业务系统的卡片 |
+| 对话页状态条变成一条黄色提示 | 该 slot 条目渲染时抛错，`SlotBoundary` 把它降级了（1.6.0 之前会整块消失） | 点 [重试]；打开面板页脚 [诊断] 或敲 `/crm-doctor` 看具体错误，把摘要反馈给插件维护者 |
+| 保存失败的红字一直挂着 | 1.7.0 之前字段报错只在下一次保存时才清 | 升级到 1.7.0+：增删预设附件、改技能栈会立刻清掉对应字段的报错 |
+| 面板页脚两端版本不一致 | 客户端模块是刷新前加载的旧 bundle | Ctrl+R 刷新页面；仍不一致说明 profile 里 link 的仓库没更新 |
+| 模型每轮都在重复场景说明 | 注入分级没生效：`injectSkillsOnStep` 每轮都在发 `names` 而不是 `brief` | 正常应为首次 `names`、之后 `brief`；`/crm-doctor` 能看到 `config.injectSkillBodies`，确认不是开了正文注入 |
+| 预设附件没进托盘 | 附件下载失败（远端 404/超时）、卡片里没有 `presetAttachments`，或 1.5.2 及之前只靠输入框组件挂载 | 升级到 1.5.3+（面板侧直接挂托盘，并回读确认）；面板会弹「预设附件没能挂到输入框」的提示；仍失败看 Host 日志与资产文件是否还在 |
 | 「标准场景」为空 | 未配置/无法访问 `apiBaseUrl`，请求未认证，或远端返回 0 条 | 检查 `apiBaseUrl`；点「同步」看 Host 日志里的 HTTP 状态与 `correlationId` |
 | 页签显示「未认证」 | 既没有 `internal_bearer` 凭据也没有可用 Buntu Token | 优先补部署客户端 Token：环境变量或 `<DSH_HOME>/.env` 写 `CRM_MCP_CLIENT_TOKEN=…`（控制面的 `MCP_CLIENT_TOKEN`），用户身份会从 `<DSH_HOME>/identity.json` 的 `salary_id` 自动补齐；仍不行再看 `buntuToken`。控制面要求两个头：`Authorization: Bearer <客户端 Token>` + `X-Platform-User-Id: <薪号>` |
 | 标准场景没有编辑/删除按钮 | 服务端 `auth.canManageStandardScenario !== true` | 这是权限红线：普通用户只能「进入场景 / 复制为本地场景 / 下载到本地」 |
@@ -315,7 +364,7 @@ Copy-Item -Recurse -Force D:\GitProject\crm-dsh-plug `
 ## 8. 开发与验收
 
 ```powershell
-node --test          # 131 个用例：schema / 存档 / 上下文块 / Skill 目录 / 登录身份 / 业务门面 / MCP 契约 / HTTP / 资产路由 / 整装集成
+node --test          # 175 个用例：schema / 激活栈 / 存档 / 上下文块 / 客户端纯函数 / Skill 目录 / 登录身份 / 业务门面 / MCP 契约 / HTTP / 资产路由 / 整装集成
 node scripts/check.mjs   # 交付前自检：清单字段、被引用文件、客户端加载方式、主题变量、locale、bundle patch
 ```
 
@@ -324,12 +373,18 @@ node scripts/check.mjs   # 交付前自检：清单字段、被引用文件、�
 - 缺 `description` 必须报错；`pinnedSkills` 去重且保持顺序；看不见的 Skill 只警告、不谎称不存在；
 - 场景配置：预设附件类型/MIME/大小/数量与越界路径校验、`inputDraft` 与发布元数据、非法版本收敛、`sourceType` 兜底；
 - Skill 目录：frontmatter 解析、目录扫描去重排序、目录缺失静默降级；
-- 存档原子写、`changed:false` 不落盘、损坏隔离、版本降级保护、激活记录 7 天/200 条裁剪；
-- 注入块：顺序、缺失标注、预算截断、`full → reminder` 只发一次正文、预设附件的附件边界声明、对象/动作/入口不再预设；
-- 输入框契约：`activationState.draft` 的 `reference`（`/场景名称`）、`welcome`（开场引导）、`inputDraft` 预填、附件带可拉取 URL 且不泄露落盘路径；
+- 激活栈（`lib/core/activation.js`）：旧存档（只有 `scenarioId`）升级成单元素栈、坏记录丢弃、`stack: false` 替换 / `stack: true` 追加且保留注入进度、逐个移除到空即消失、`pruneActivations` 的过期/闲置/悬空/超限四类计数；
+- 存档原子写、`changed:false` 不落盘、损坏隔离、版本降级保护、激活记录 7 天 + 24 小时闲置 + 悬空 + 上限 50 条裁剪；
+- 注入块：顺序、缺失标注、预算截断、`names → brief` 与 `full → reminder` 两条分级链、叠加 N 个场景时拼 N 个块并在块内注明、预填模板「已经随用户消息一起提交 / 没有一起发出来」两种文案、预设附件的附件边界声明、对象/动作/入口不再预设；
+- 输入框契约：`activationState.draft` 的 `reference`（`/场景名称`，仅供参考）、`welcome`（开场引导）、`inputDraft` 预填、附件带可拉取 URL 且不泄露落盘路径；`seededDraftTextFor` 只吃 `inputDraft`、`shouldClearSeededDraft` 的四个边界（`test/client.test.js` 用 `node:vm` 直接加载 `lib/client.js` 的 `__pure` 出口）；
 - 创建人：只用 DSH 身份（宿主账号资料 / `defaultAuthor` / 进程用户），MCP 的 `crmUsername` 不参与、前端伪造无效、编辑保留原创建人；
 - 公司标准场景：默认地址、Buntu/internal_bearer 身份头、8 个 `/api/dsh` 接口、写请求剔除 `version/revision/createdAt/updatedAt/presetAttachments`、`revision/version` 自动升级、`sha256` 附件增量同步、`deletedScenarioIds` 自动卸载、普通用户只读与「复制为本地场景」；
-- 新会话带入：`/场景名称` + `inputDraft` 预填、空白会话的「场景开场」卡片、`SCENARIO_PRESET` 附件自动挂载、无权限时抽屉不渲染发布入口、「进入场景」必须落在主面板当前会话（不用 `sessions.list.current` / `ctx.sessions.open`）；
+- 新会话带入：只有 `inputDraft` 的预填（不再有 `/场景名称` 首行）、空白会话的「场景开场」卡片、`SCENARIO_PRESET` 附件自动挂载、无权限时抽屉不渲染发布入口、「进入场景」必须落在主面板当前会话（不用 `sessions.list.current` / `ctx.sessions.open`）；
+- 多场景：同一会话叠加两个场景后注入两个块、`activation.deactivate` 摘一个后仍剩一个、摘空后 `store.activation()` 为 `undefined`、超过 8 个被拒绝、`diagnostics` 报出 `lifecycle.ttlHours / idleHours` 与当前会话的激活栈；
+- 业务系统：`businessSystem` 必填（缺就报错、超长与保留字符被拒）、`category` 选填、自定义系统名派生稳定 key（`CRM → crm`、`其他 → other`、中文名走 slug/哈希）、1.6.x 老存档 coerce 成 `CRM`、公司标准场景缺字段时按 `CRM` 兜底；
+- 工作区：标题命中 / 标题等于 key / 目录命中三条复用路径、都没有时建目录 + 建工作区、registry 不返回 id 时按目录回查、只有 controller 时 `create + rename`、没有工作区服务时返回可读失败原因（`test/workspaces.test.js`）；
+- 客户端契约：技能栈只接受本地已有 Skill（无「追加」按钮、找不到就报错、Skill 列表人人可读）、新建默认业务系统 + 允许附件、列表按业务系统过滤、进入/叠加前先 `workspace.ensure`、`CLIENT_VERSION` 与 `package.json` 一致；
+- 叠加边界：跨业务系统的场景会被拦下（不建会话、不动原栈），同系统叠两个场景仍然正常叠成两项；
 - HTTP：403/405/415/400/500 全分支、业务 `ok:false` 结构化失败、堆栈不外泄、资产路由 404；
 - 整装：`apply()` 真的挂上 `/crm-workspace/api`、建卡→激活→注入闭环、指令注册与执行、重启后配置仍在。
 
@@ -346,11 +401,13 @@ lib/
     constants.js  常量、限额、词表
     schema.js     场景配置校验与规范化（含预设附件/版本/发布元数据）
     state.js      存档读写（原子写、损坏隔离、版本保护）
+    activation.js 激活栈与生命周期（叠加/移除/注入进度/过期闲置回收），纯函数
+    workspaces.js 业务系统 → 工作区的解析与创建（标题/目录命中复用，缺失时建目录 + 建工作区）
     assets.js     预设附件资产目录（类型校验、防目录穿越）
     registry.js   公司标准场景注册中心客户端（列表/发布/下载）
-    block.js      注入块组装（含附件边界声明）
-    api.js        业务门面
+    block.js      注入块组装（names / brief / full / reminder 四档，含附件边界声明）
+    api.js        业务门面（含 diagnostics）
 locale/           zh.json / en.json
-test/             node:test 用例
+test/             node:test 用例（client.test.js 用 node:vm 加载 lib/client.js 的 __pure 出口）
 scripts/check.mjs 交付自检
 ```
