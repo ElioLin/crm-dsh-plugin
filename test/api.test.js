@@ -13,7 +13,7 @@ import {
   toRemoteWritePayload,
 } from '../lib/core/registry.js';
 import { createStateStore } from '../lib/core/state.js';
-import { DEFAULT_MCP_API_BASE_URL } from '../lib/core/constants.js';
+import { DEFAULT_ICON, DEFAULT_MCP_API_BASE_URL } from '../lib/core/constants.js';
 
 const baseDraft = {
   title: 'CRM 单据新建与修改',
@@ -816,7 +816,20 @@ test('toRemoteWritePayload 产出嵌套 scenarioPayload，且绝不携带 versio
 
   const post = toRemoteWritePayload(local, false);
   assert.equal(post.scenarioId, 'crm_std_visit');
-  assert.deepEqual(Object.keys(post).sort(), ['category', 'description', 'scenarioId', 'scenarioPayload', 'status', 'title']);
+  // 顶层只能是服务端契约里那几个字段：dshScenarioCreateSchema 用 zod .strict()，
+  // 多一个键就 400，所以插件自有字段（icon / businessSystem）一律放进 scenarioPayload。
+  assert.deepEqual(Object.keys(post).sort(), [
+    'category',
+    'description',
+    'scenarioId',
+    'scenarioPayload',
+    'status',
+    'title',
+  ]);
+  assert.equal('icon' in post, false, 'icon 不能放顶层');
+  assert.equal('businessSystem' in post, false, 'businessSystem 不要放顶层');
+  // 图标要跟着走：远端一直读 icon，写回时漏了它会让「推上去再拉回来」图标被重置。
+  assert.equal(post.scenarioPayload.icon, DEFAULT_ICON);
   assert.deepEqual(post.scenarioPayload.pinnedSkills, ['crm-core']);
   assert.equal(post.scenarioPayload.sourceType, 'COMPANY_STANDARD');
   assert.equal(post.scenarioPayload.readonlyForNormalUser, true);
@@ -824,6 +837,21 @@ test('toRemoteWritePayload 产出嵌套 scenarioPayload，且绝不携带 versio
   for (const forbidden of ['"version"', '"revision"', '"createdAt"', '"updatedAt"', '"presetAttachments"']) {
     assert.equal(serialized.includes(forbidden), false, `${forbidden} 不应出现在写请求里`);
   }
+
+  // 业务系统随场景同步（1.8.0）：经 scenarioPayload 往返；空值不写，避免把「未填写」当成一次清空。
+  assert.equal('businessSystem' in post.scenarioPayload, false);
+  assert.equal(
+    toRemoteWritePayload({ ...local, businessSystem: '  TAPD  ' }, false).scenarioPayload.businessSystem,
+    'TAPD',
+  );
+  // 服务端把它存在 scenarioPayload 里原样返回，fromRemoteScenario 的 pick 先读 payload，
+  // 所以「推上去再拉回来」业务系统不会丢（也不会退回 CRM）。
+  const roundTrip = fromRemoteScenario(
+    { ...remoteScenario(), scenarioPayload: { ...(remoteScenario().scenarioPayload ?? {}), businessSystem: 'TAPD' } },
+    DEFAULT_MCP_API_BASE_URL,
+    {},
+  );
+  assert.equal(roundTrip.businessSystem, 'TAPD');
 
   const put = toRemoteWritePayload(local, true);
   assert.equal('scenarioId' in put, false);
@@ -1221,6 +1249,36 @@ test('activationState 把预设附件转成可拉取的下载地址', async () =
   assert.equal(state.draft.attachments[0].localPathOrUrl, undefined);
 });
 
+test('叠加场景时，输入框带入的预设附件取整个栈的并集', async () => {
+  const { api } = await makeApi();
+  const first = await api.saveAttachment({
+    fileName: '订单模板.xlsx',
+    dataBase64: Buffer.from('xlsx-1').toString('base64'),
+  });
+  const second = await api.saveAttachment({
+    fileName: '客户清单.csv',
+    dataBase64: Buffer.from('csv-2').toString('base64'),
+  });
+  const a = await api.saveScenario({ draft: { ...baseDraft, presetAttachments: [first.attachment] } });
+  const b = await api.saveScenario({
+    draft: {
+      ...baseDraft,
+      title: '叠加进来的场景',
+      scenarioId: 'crm-stacked',
+      slashCommand: '/stacked',
+      presetAttachments: [second.attachment],
+    },
+  });
+  await api.activateScenario({ sessionId: 's-stack', scenarioId: a.card.scenarioId });
+  const stacked = await api.activateScenario({ sessionId: 's-stack', scenarioId: b.card.scenarioId, stack: true });
+  assert.equal(stacked.ok, true, JSON.stringify(stacked));
+  const state = await api.activationState({ sessionId: 's-stack' });
+  const names = state.draft.attachments.map((item) => item.fileName).sort();
+  assert.deepEqual(names, ['客户清单.csv', '订单模板.xlsx']);
+  // 每个附件都要能直接 GET 到（叠加进来的那张卡也不例外）。
+  for (const item of state.draft.attachments) assert.match(item.url, /^\/crm-workspace\/asset\//);
+});
+
 test('新会话带入的客户端契约：场景引用、开场引导、预设附件', async () => {
   const source = await readFile(new URL('../lib/client.js', import.meta.url), 'utf8');
   assert.ok(source.includes('🟢 正在使用场景：【'));
@@ -1234,15 +1292,20 @@ test('新会话带入的客户端契约：场景引用、开场引导、预设�
   assert.ok(source.includes('seededDraftTextFor'));
   assert.ok(source.includes('shouldClearSeededDraft'));
   assert.ok(source.includes('crmw-guide'));
-  assert.ok(source.includes('inputActions.addAttachments(ids)'));
+  // 附件挂载收敛成一个幂等入口：面板与场景栏都走它，避免同一份附件被挂两次。
+  assert.ok(source.includes('attachPresetFilesToTray'));
+  assert.ok(source.includes('seededAttachments'));
   assert.ok(source.includes('复制为本地场景'));
   assert.ok(source.includes('设为插件标准场景'));
   // 预填还有一条不依赖输入框 slot 的路径：面板直接写进会话输入框并回读确认。
   assert.ok(source.includes('seedComposer(ctx, sessionId, {'));
   assert.ok(source.includes('conversation?.input?.for?.(scope)'));
   // 预设附件与草稿一起进托盘（面板侧，不依赖 dock）。
-  assert.ok(source.includes('conversation.createDrafts(sessionId, files)'));
+  assert.ok(source.includes('conversation.createDrafts(sessionId, files, false)'));
   assert.ok(source.includes('facade.addAttachments(ids)'));
+  // 退出场景 / 移除最后一个场景 / 别处退出，三条路径都要把附件从托盘摘掉。
+  assert.ok(source.includes('dropSeededAttachments(ctx, sessionId)'));
+  assert.ok(source.includes('exceptSeedKey'));
   // /指令 回车走客户端动作：激活 + 提示，而不是只清空输入框。
   assert.ok(source.includes('commandUi.decorate('));
   assert.ok(source.includes('runScenarioCommand'));

@@ -64,6 +64,25 @@ async function loadPure() {
   return exported.__pure;
 }
 
+test('场景栈去重键：同一套场景稳定，换场景或改版本就换键', async () => {
+  const pure = await loadPure();
+  const one = [{ scenarioId: 'crm_a', version: '1.0.0' }];
+  const two = [
+    { scenarioId: 'crm_a', version: '1.0.0' },
+    { scenarioId: 'crm_b', version: '2.0.0' },
+  ];
+  // 同一个栈必须给出同一个键：面板与场景栏靠它认出「这批附件已经挂过」。
+  assert.equal(pure.scenarioSeedKey(one), pure.scenarioSeedKey([...one]));
+  assert.equal(pure.scenarioSeedKey(one), 'crm_a@1.0.0');
+  assert.equal(pure.scenarioSeedKey(two), 'crm_a@1.0.0+crm_b@2.0.0');
+  // 顺序不同 = 技能栈顺序不同，必须换键。
+  assert.notEqual(pure.scenarioSeedKey(two), pure.scenarioSeedKey([...two].reverse()));
+  // 版本升级后场景内容可能变了，也应该重新挂一次附件。
+  assert.notEqual(pure.scenarioSeedKey(one), pure.scenarioSeedKey([{ scenarioId: 'crm_a', version: '1.0.1' }]));
+  assert.equal(pure.scenarioSeedKey([]), '');
+  assert.equal(pure.scenarioSeedKey(undefined), '');
+});
+
 test('预填文本只取填写模板，绝不带 /场景标题 假指令', async () => {
   const pure = await loadPure();
   assert.equal(pure.prefillTextFor({ title: 'CRM单据新建与修改（副本）', inputDraft: '  订单号：\n客户：  ' }), '订单号：\n客户：');
@@ -182,10 +201,27 @@ test('字段改好之后，旧的保存报错会立刻消失', async () => {
 test('跨业务系统的场景不能叠加进同一段会话', async () => {
   const text = await source();
   // 叠加前把当前栈里的业务系统与目标卡比一遍，不一致就拦住并说明怎么继续。
-  assert.match(text, /if \(stack === true\) \{\s*const conflicts = activeCards/);
+  assert.match(text, /if \(stack === true\) \{/);
+  assert.match(text, /const conflicts = liveStack/);
   assert.match(text, /跨业务系统不能叠加/);
-  // 拦住之后不能再往下走去建会话/激活。
-  assert.match(text, /return;\s*\}\s*\}\s*setBusyId\(card\.scenarioId\);/);
+  // 拦住之后不能再往下走去建会话/激活：冲突判断必须排在 setBusyId 之前。
+  assert.ok(text.indexOf('跨业务系统不能叠加') < text.indexOf('setBusyId(card.scenarioId)'), '冲突拦截要在激活之前');
+  // 同一张卡已经在栈里时再点叠加，也不能换会话（否则旧会话的预填/附件会被收走）。
+  assert.match(text, /liveStack\.some\(\(item\) => item\.scenarioId === card\.scenarioId\)/);
+  assert.ok(text.includes('已经在当前对话里了'), '重复叠加要给出提示');
+  // 守卫必须看宿主上的真实栈：面板里的 activation 可能是上一轮轮询的旧值。
+  assert.ok(text.includes("callHost('activation.state', { sessionId: stackSession })"), '要读真实栈再判断');
+});
+
+test('/指令 进入场景时也会带上预填与预设附件', async () => {
+  const text = await source();
+  const at = text.indexOf('async function runScenarioCommand');
+  assert.ok(at > 0, '找不到 runScenarioCommand');
+  const body = text.slice(at, at + 2600);
+  // 空白会话才塞内容；已有消息的会话只是换场景。
+  assert.ok(body.includes('isBlankSession(ctx, sessionId) === true'), '只在空白会话里预填');
+  assert.ok(body.includes('seedComposer(ctx, sessionId'), '/指令 进入后要调用 seedComposer');
+  assert.ok(body.includes('scenarioSeedKey([card])'), '要与面板用同一个去重键');
 });
 
 test('客户端版本号与 package.json 一致，显示名是「场景工作台」', async () => {
