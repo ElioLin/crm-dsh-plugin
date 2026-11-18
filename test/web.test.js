@@ -80,6 +80,7 @@ test('方法白名单只包含登记过的接口', () => {
     'scenario.publish',
     'scenario.save',
     'scenario.sync',
+    'skills.check',
     'skills.list',
     'workspace.ensure',
   ]);
@@ -354,14 +355,19 @@ test('activation.activate 透传 stack，deactivate / diagnostics / brief 预览
   // 处理器闭包捕获的是 createDispatchTable 时传入的 api，第一个参数只是签名占位。
   const table = createDispatchTable(api);
 
-  await table.get('activation.activate')(api, { sessionId: 's1', scenarioId: 'c1', stack: true, source: 'ui' });
+  await table.get('activation.activate')(api, { sessionId: 's1', scenarioId: 'c1', stack: true, source: 'ui', cwd: 'D:\\ws\\crm' });
   await table.get('activation.activate')(api, { sessionId: 's1', scenarioId: 'c1' });
   await table.get('activation.deactivate')(api, { sessionId: 's1', scenarioId: 'c1' });
   await table.get('diagnostics')(api, { sessionId: 's1', host: { version: '1.6.0' } });
   await table.get('preview.injection')(api, { scenarioId: 'c1', mode: 'brief' });
 
-  assert.deepEqual(calls[0], ['activate', { sessionId: 's1', scenarioId: 'c1', source: 'ui', stack: true }]);
+  assert.deepEqual(calls[0], [
+    'activate',
+    { sessionId: 's1', scenarioId: 'c1', source: 'ui', stack: true, cwd: 'D:\\ws\\crm' },
+  ]);
   assert.equal(calls[1][1].stack, false, '没传 stack 时必须显式传 false，避免 undefined 被当成叠加');
+  // 1.9.0：cwd 决定技能按哪一层解析；没传就是空串（宿主按根视图判断）。
+  assert.equal(calls[1][1].cwd, '');
   assert.deepEqual(calls[2], ['deactivate', { sessionId: 's1', scenarioId: 'c1' }]);
   assert.equal(calls[3][1].host.version, '1.6.0');
   assert.equal(calls[4][1].mode, 'brief');

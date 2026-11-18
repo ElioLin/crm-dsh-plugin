@@ -53,7 +53,10 @@ async function main() {
     if (!condition) fail(message);
   };
 
-  expect(pkg.name === 'dsh-crm-workspace', 'package.json name 必须是 dsh-crm-workspace');
+  expect(
+    typeof pkg.name === 'string' && /^@runner-corp\/dsh-[a-z0-9-]+$/.test(pkg.name),
+    'package.json name 必须是 @runner-corp/dsh-* 形式（公司私有源 scope）',
+  );
   expect(pkg.type === 'module', 'package.json 必须声明 "type": "module"');
   expect(typeof pkg.version === 'string' && pkg.version !== '', 'package.json 缺少 version');
   expect(pkg.dsh?.bundle?.patch === './cordis.patch.yml', 'dsh.bundle.patch 必须指向 ./cordis.patch.yml');
@@ -97,6 +100,13 @@ async function main() {
   expect(/require\(['"]react['"]\)/.test(client), 'lib/client.js 必须用 require("react") 取得 React');
   expect(client.includes("name: 'main'") || client.includes('name:"main"'), 'lib/client.js 必须注册 main 面板');
   expect(client.includes('sidebar.panellist'), 'lib/client.js 必须注册 sidebar.panellist 入口');
+  // 宿主按包名生成 boot manifest 的行，并校验脚本注册了同名模块：
+  // id 与 package.json 的 name 一旦不一致，整个客户端原地不加载。
+  const clientId = /__ModuleLoader__\.load\(\{[\s\S]{0,200}?id:\s*'([^']+)'/.exec(client)?.[1];
+  expect(
+    clientId === pkg.name,
+    `lib/client.js 的 __ModuleLoader__ id 必须是 ${pkg.name}（当前 ${clientId ?? '未找到'}）`,
+  );
   expect(client.includes('🟢 正在使用场景：【'), 'lib/client.js 必须在输入框上方展示「正在使用场景」标识');
   expect(client.includes('设为插件标准场景'), 'lib/client.js 必须提供「设为插件标准场景」勾选框');
   expect(client.includes('复制为本地场景'), 'lib/client.js 必须提供「复制为本地场景」动作');
@@ -114,7 +124,11 @@ async function main() {
 
   const patch = await readFile(join(root, 'cordis.patch.yml'), 'utf8');
   expect(/id:\s*crm-workspace/.test(patch), 'cordis.patch.yml 缺少 id: crm-workspace');
-  expect(/name:\s*['"]?dsh-crm-workspace/.test(patch), 'cordis.patch.yml 的 name 必须是 dsh-crm-workspace');
+  // 包名只在 package.json 里写一次：这里的断言跟着它走，改名不用再改第二处。
+  expect(
+    patch.includes(`name: '${pkg.name}'`),
+    `cordis.patch.yml 的 name 必须是 ${pkg.name}（要与 package.json 一致，宿主按包名加载）`,
+  );
   expect(/apiBaseUrl:\s*['"]?http:\/\/crmmcptest\.runner-corp\.com\.cn:9000/.test(patch), 'cordis.patch.yml 必须配置默认 apiBaseUrl');
   ok('bundle patch');
 

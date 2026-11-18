@@ -53,6 +53,20 @@ test('默认只注入场景与 Skill 名称，不带介绍与正文', () => {
   assert.ok(!text.includes('未预载'));
 });
 
+test('技能随用户消息以 /技能名 提交时，不再让模型重复加载正文', () => {
+  const text = buildContextBlock({ card, skills, skillsProvided: true });
+  // 宿主已经把正文按同一顺序注入本次请求：这里必须改成「直接按正文执行」。
+  assert.match(text, /已经以 `\/技能名` 随用户消息提交/);
+  assert.match(text, /不要再调用 skill 工具重复加载/);
+  assert.equal(/用 skill 工具逐个按名称加载正文/.test(text), false);
+  // 顺序与场景说明照旧。
+  assert.ok(text.indexOf('crm-core') < text.indexOf('crm-record-change'));
+  assert.ok(text.includes(card.description));
+  // brief 模式不受影响：它本来就不提加载动作。
+  const brief = buildContextBlock({ card, skills, mode: 'brief', skillsProvided: true });
+  assert.ok(!brief.includes('skill_content'));
+});
+
 test('brief 模式只留一行唤醒：不带场景说明与技能列表', () => {
   const text = buildContextBlock({ card, skills, mode: 'brief', injectionCount: 3 });
   assert.ok(text.startsWith(`${CONTEXT_MARKER} scenario=crm_case mode=brief`));

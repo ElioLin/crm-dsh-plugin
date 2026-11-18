@@ -5,7 +5,7 @@
 # 持久化在 <profile>/crm-workspace/state.json。
 - insert:
     - id: crm-workspace
-      name: 'dsh-crm-workspace'
+      name: '@runner-corp/dsh-scenario-workspace'
       config:
         # 留空 = 使用默认位置 <DSH_PROFILE_DIR>/crm-workspace
         dataDir: ''
@@ -36,5 +36,19 @@
         injectSkillDescriptions: false
         # 是否把每张卡片的 slashCommand 注册成真正的 Host 指令
         registerSlashCommands: true
+        # 进入场景时把绑定的 Skill 以 `/技能名` 预填进输入框（1.9.0）。
+        # 开：等同于用户自己引用技能，宿主会把技能正文作为 instructions 注入本次请求；
+        # 关：退回 1.8.0 行为，只预填场景模板，进入前也不做技能预检。
+        skillRoutePrefill: true
+        # 进入场景前发现本机缺 Skill 时，按名字去「智能体中心」的技能市场自动安装。
+        # 关掉只提示不自动装（装不上无论如何都会弹窗让用户决定）。
+        autoInstallSkills: true
         # 是否在侧边栏显示入口（关闭后仅保留 main 面板与指令）
         showSidebarEntry: true
+        # 自更新：查询新版本用的 registry。留空时按
+        # 「DSH_PLUGIN_REGISTRY / npm_config_registry 环境变量 → profile 与 home 的 .npmrc → 官方源」
+        # 依次推断；私有源通常只要用户机器的 .npmrc 配了 registry 与 _authToken 就无需改这里。
+        updateRegistry: ''
+        # 是否在打开面板时检查新版本。关掉后不再主动查，也不弹升级提示；
+        # 用户仍可在「插件」页手动升级（这条开关不影响 DSH 自身的插件管理）。
+        autoUpdateCheck: true

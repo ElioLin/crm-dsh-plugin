@@ -1,5 +1,246 @@
 # 变更记录
 
+## 1.12.0
+
+插件从「拷目录 / link 本地路径」变成**可分发、可自升级的 npm 包**。
+
+### 问题：别人装不上，发新版也没人知道
+
+原来的安装方式是 `link:D:/GitProject/crm-dsh-plug`。这有三个后果：只有这台机器能用；
+DSH 的市场把 `link:` 判为 `kind: "linked"`，**明确不提供升级**；版本号取的是目录里的
+`package.json`，改了立刻生效，但那不是用户环境。
+
+更关键的是宿主**没有「检查更新」的能力**：`plugin-manager` 只有 `installBundle` /
+`inspect` / `listBundles` / `removeBundle` / `setEnabled`，官方 `plugin-market` 也只负责
+索引源与安装。所以「有新版本了」这句话只能由插件自己说。
+
+### 改动
+
+- **包名改为 `@runner-corp/dsh-scenario-workspace`**：用公司 scope，且不再含 CRM——
+  这个插件以后要接 TAPD 等别的业务系统，包名不该锁死在一条业务线上。
+  loader 条目名（`cordis.patch.yml` 的 `name`）与客户端 `__ModuleLoader__.load({ id })`
+  同步改；`scripts/check.mjs` 新增断言守住「package.json / patch / 客户端 id」三处一致，
+  改名不会再漏一处。**运行时标识不变**：`PLUGIN_ID` 仍是 `crm-workspace`，存档目录仍是
+  `<profile>/crm-workspace`，老用户的场景卡片与激活记录不受影响。
+- 新增 `lib/core/updater.js`（零依赖）：
+  - `check()` 读 registry 的 `<name>/latest`，用 semver 比较，默认缓存 6 小时，同一时刻只发一个请求；
+  - `apply()` 后台调宿主 `installBundle('<name>@<version>')`，立刻返回，由 `status()` 轮询终态；
+  - `skip(version)` 记下「这个版本不再提醒」，落在 `<dataDir>/updater.json`；
+  - registry 与凭据按「显式配置 → `DSH_PLUGIN_REGISTRY`/`npm_config_registry` → profile 与
+    home 的 `.npmrc`（按 host+path 匹配 `_authToken`）→ 官方源」解析，私有源无需额外配置。
+- 新增 4 个 Host 接口（挂在既有 `/crm-workspace/api` 上）：`update.check` / `update.apply` /
+  `update.status` / `update.skip`。检查失败一律返回 `ok:false`，不抛错、不影响面板打开。
+- 客户端：面板挂载时检查一次；有新版且未被跳过时弹窗（当前 → 最新、更新说明、弃用警告），
+  按钮为「稍后 / 跳过此版本 / 立即升级」。升级中禁用按钮并提示不要关闭 DSH，
+  完成后提示重启（Host 代码在进程内）。
+- 版本号收敛成单点：`lib/core/constants.js` 的 `PLUGIN_VERSION` 与 `PLUGIN_NAME` 改为直接读
+  `package.json`。此前 `package.json` 与代码里的版本曾出现 1.11.0 / 1.11.1 分裂，
+  而更新器正是靠版本号判断新旧。
+- 新增 `scripts/build-index.mjs`：生成 DSH 插件市场索引（format 1）。展示信息取
+  `package.json` 的 `dsh.index`（标题、分类、关键词、DSH 兼容范围），发版后重新生成覆盖即可。
+  配合「插件 → 发现 → 索引源」，员工加一次 URL 就能像逛市场一样安装。
+- 新增 `docs/plugin-distribution.md`：发布、安装、索引源、升级、复用与排障。
+- 新增 `scripts/publish.mjs`：直接调 registry 的 PUT 接口发布。
+  `npm publish` 会在发之前检查本地 token，没有就抛 `ENEEDAUTH`——哪怕服务端配的是
+  匿名可发；这个脚本不需要账号，自己算 sha1/sha512、按 npm 约定命名附件。
+- 新增 `deploy/registry/`：测试服务器的一键部署产物（Verdaccio 配置、systemd 单元、
+  nginx 独立站点、install.sh、部署说明）。**站点独立在 9001**，不挂在 MCP 的 9000 上：
+  9000 的 server 块属于 MCP 服务，把 location include 进去，别人改 MCP 入口或重部署
+  nginx 时会顺手冲掉，出问题也难判断是谁影响谁。
+- 修复 `normalizeRegistry` 把 `ftp://x` 拼成 `https://ftp//x/` 的问题（非 http(s) 协议直接判无效）。
+- 新增配置 `updateRegistry` / `autoUpdateCheck`。
+
+### 验证
+
+- `node --test`：212 个用例全绿（新增 `test/updater.test.js` 19 个：版本比较含预发布、
+  registry/`.npmrc` 解析与优先级、缓存与并发去重、401/404/网络失败降级、跳过版本落盘、
+  安装成功/`restart-required`/失败/抛错四种终态、无更新时拒绝启动安装）。
+- `node scripts/check.mjs`：7 组自检通过。
+- `npm run index` 生成的索引经人工核对：`format: 1`、分类中文名、`versions[0].source.type = npm`。
+
+## 1.11.1
+
+进入场景预置到输入框的东西，现在和用户自己动手**走同一条路**：写进去的只是一个纯文本字符串，
+宿主 `setDraft(string)` → `draftEditor.setDraft(text)` → `clear()` + `$appendParagraphs`，
+`/技能名` 由 lexicon 扫成 `TextRefNode`。1.11.0 造出来的那套 chip 没有了。
+
+### 问题：同一个输入框，两种长相
+
+1.11.0 为了「点技能名就能看正文」，把预填改成了 `setDraft({ text, references })`。宿主于是改走
+`draftEditor.restoreDraft()`，把 `/技能名` 插成 `ReferenceChipNode`。它确实可点，但用户手打
+一个技能得到的是 `TextRefNode`——普通文本加引用样式。两边不是一种东西：
+
+| | 手打 | 1.11.0 预填 |
+| --- | --- | --- |
+| 节点 | `TextRefNode`（可逐字编辑、退格拆开） | `ReferenceChipNode`（整体替换、整体删除） |
+| 名字来源 | lexicon 扫描草稿 | 我们塞进 references 的 `ref` |
+| 外观 | 宿主按文本推断 | 我们写死 `appearance: 'file'`，连图标都是文件那套 |
+| 提交 | 不需要序列化（就是文本） | 必须有 `codec`，否则 `no serializer for reference source` |
+
+### 改动
+
+- 删除 `composeDraftPayload`，换成 `draftPayloadFor(text)`：只返回字符串。`seedComposer`（面板 /
+  `/指令` 进入场景）与 `writeDraft`（场景栏重写草稿）两个写入口都只递字符串，代码里不再有
+  `appearance`、不再拼 references。
+- `crm-workspace-skill` 引用源降级成宿主技能源的补充，不再是任何 chip 的主人：
+  `lexicon` 补一份技能名字表；`openReference` 只在宿主源认不出名字时用 `skills.check` 拿
+  `SKILL.md` 路径兜底打开；`candidates` 仍是空数组（空分组宿主不渲染）；`codec` 保留，
+  只为还原 1.11.0 时期写进存档的草稿，避免升级后回车被 `no serializer` 拒收。
+- 预设附件与手动拖拽同一份语义：`conversation.createDrafts(sessionId, files, ordinary)`，
+  `ordinary = sessions.binding(sessionId)?.session.getSnapshot().subagent === null`；普通会话
+  才预上传图片，子代理续跑时图片随 prompt 内联。
+- `test/client.test.js`：原来的 4 个 chip 用例换成 5 个「与手打同源」用例（载荷恒为字符串、
+  预填路径上没有 references/appearance、引用源只剩名字表与兜底、codec 仅为旧存档、附件
+  ordinary 语义）。
+
+### 验证
+
+- `node test/client.test.js`：24 个用例全绿。
+- `node scripts/check.mjs`：7 组自检通过。
+
+## 1.11.0
+
+输入框里预填的 `/技能名` 现在**本身就是可点 chip**：点它在右侧栏打开 `SKILL.md`，跟用户
+自己从 `/` 菜单里挑出来的完全一样。这是 1.10.0「场景栏 chip」被否掉之后的正确做法。
+
+### 为什么 1.10.0 那条路不对
+
+1.10.0 的结论是「技能没有结构化 reference codec，所以预填不了真 chip」，于是把入口挪到了
+输入框上方的场景栏。但用户要的是**输入框里那个 token 自己能点**——场景栏只是绕路。
+
+重读宿主源码后确认这个结论是错的：真正的障碍不是「造不出 chip」，而是我们写入草稿的方式。
+
+- `conversation.input.for(session).setDraft(x)` 的入参 `DraftInput` 是
+  `string | { text, references[], quotes?, command? }`。**我们一直传的是纯字符串**，
+  facade 里 `resolveDraftInput` 会把它当成 `references: []`，走到
+  `draftEditor.setDraft(text)` —— 那条路只做 `$getRoot().clear()` + `$appendParagraphs`，
+  纯文本里不可能长出 chip。
+- 传结构化对象时走的是另一个分支 `draftEditor.restoreDraft(text, references, quotes, …)`，
+  它给每条 reference 直接 `paragraph.append(new ReferenceChipNode({...}))`。**chip 是插进去
+  的，不靠 lexicon 扫描**，所以和「目录结算了没有」完全无关。
+- 点击时 `registerReferenceActivation` 只做一件事：`$isReferenceChipNode(node)` →
+  `open(node.getSource(), { ref })` → `inputTriggers.openReference(source, …)`。带 source
+  时**不看 lexicon**，按 `owner.name === source` 找注册过的触发源。
+
+唯一真正的硬约束在提交侧：`serializeReference` 里
+`if (owner?.codec === undefined) return Promise.reject(...)`，chip 的 source 必须是一个
+**带 codec 的、我们自己注册的源**。宿主的 `skill` 源（`trigger:'/'`、`name:'skill'`）在源码
+里明写 "this source implements no reference codec"，所以借它的名字会在按下回车时被拒收
+（`slash: no serializer for reference source "skill"`）。
+
+### 新增
+
+- **自注册的引用源 `crm-workspace-skill`**（`trigger:'/'`，`order:3`）：
+  - `codec = { clipboardText: ref => ref, serialize: async ref => ref }` —— 序列化回原样的
+    `/技能名`，所以提交出去的正文与用户手打一字不差，宿主的 `SKILL_GESTURE` 照常把它当成
+    技能手势注入正文。
+  - `openReference` 复用已有的 `openFileInSidebar`：先用 `skills.check` 取该技能在本机的
+    `SKILL.md` 绝对路径（`skills.list` 不含 `path`），再在右侧栏打开。
+  - `lexicon` / `subscribeLexicon` / `warm` 也从插件侧的 `skills.list` 供给，让草稿里的
+    `/技能名` 在**没被结构化引用覆盖**的场景下（比如用户后来自己又打了一个）也能正常变蓝。
+  - `candidates` 返回空数组：插件不抢宿主的 `/` 菜单，这个源只服务 chip 的点击与序列化。
+- **`composeDraftPayload(text)`**：把预填文本开头连续若干「整行就是一个 `/kebab` token」的
+  行转成 `{ text, references }`，每条 reference 带
+  `{ source: 'crm-workspace-skill', ref, offset, length, label, appearance: 'file', clipboardText }`。
+  没有技能 token 时原样返回字符串——行为与 1.10.0 逐字节相同。
+- **两处草稿写入点都改走结构化**：`seedComposer`（面板/`/指令` 进场景）与
+  `writeDraft`（场景栏重写草稿）。`clearSeededDraft` 仍传空串，因为它本来就是要清空。
+- **`package.json` 的 `dsh.client.inject` 补 `@deepseek-ai/dsh-client-ui-input-trigger`**：
+  保证我们的客户端 bundle 在该包之后到达（此前只依赖运行时的 `ctx.inject` 等 fiber）。
+
+### 顺带确认的事实
+
+场景进入的新会话，输入框与普通新会话**是同一套组件**（同一个 `SessionInputShell` /
+`DraftEditorRuntime` / lexicon / 点击处理），差别只在我们写入的方式：纯文本 `setDraft`
+不等于结构化 `setDraft`。这也解释了 1.9.0 起「从场景进来点技能只弹菜单」的全部现象。
+
+### 验证
+
+- `node --test`：192 个用例全绿（新增 4 个：结构化草稿成形、无 token 时退回字符串、
+  单 token 偏移、codec 与注册点源码断言）。
+- `node scripts/check.mjs`：7 组自检通过。
+
+## 1.10.0
+
+点场景栏里的技能名，就能像点输入框里的技能 chip 一样，在右侧栏打开它的 `SKILL.md`。
+
+### 为什么需要这条入口
+
+DSH 输入框里的 `/技能名` 要变成可点 chip，取决于该会话的「技能目录」是否已经结算
+（`dsh-client-ui-skill` 的 `skills.list` RPC），而点击 chip 又依赖同一份目录里带着
+`path`。进入场景时我们**抢在目录结算之前**就把草稿写好了，于是草稿里只有纯文字：点它不会
+返回任何引用，编辑器退回自己的默认行为——光标落进 token、上方弹出 `/` 指令菜单。这正是
+「从场景进来点技能，只是上方出现选择指令的选项」的原因。
+
+技能没有结构化 reference codec（`serializeReference` 会直接 reject），所以「预填一个真
+chip」在 DSH 这一侧没有受支持的做法。插件因此自带一条稳定入口：场景栏渲染技能 chip，
+点击用宿主认的 `dsh-resource://file/...` 地址在右侧栏打开文件。
+
+### 新增
+
+- **场景栏的技能 chip**：输入框上方那条「🟢 正在使用场景」里，`挂载技能：` 后面每个技能
+  都是可点的 `/${name}`。点一下在右侧栏打开它的 `SKILL.md`（会话工作目录内的文件用
+  `session` 形式地址，目录外的用 `absolute` 形式，盘符的 `:` 保留）。没有文件路径的
+  技能（如内置技能包）会明确提示，不留一个「点了没反应」的假按钮。
+- **`activation.state` 的 `draft.skills`**：每条技能带上 `{name, description, path, route}`，
+  客户端据此渲染 chip 并决定点击落点。
+
+### 变更
+
+- `resolveStack` 的每一项补 `path`（服务层 → 定义层 → 目录扫描，依次回退），
+  `stackSkillTokens` 从「只返回 token 串」改成 `{ tokens, skills }`。
+
+### 验证
+
+- `node --test`：188 个用例全绿（新增「场景栏地址拼装」1 个）；
+  `node scripts/check.mjs`：7 组自检通过。
+
+## 1.9.0
+
+场景真正把技能「带进」会话：进入时技能以 `/技能名` 预填到输入框，进入前先确认这些技能在
+本机装得上、路由得了，缺的能装就直接装，装不上就拦在门口。
+
+### 新增
+
+- **进入场景时把绑定的技能预填成 `/技能名`**：输入框里出现的是
+  `/crm-core /crm-record-change` 换行接上场景模板，跟用户自己在输入框里打 `/技能名` 完全
+  一回事——宿主的 `dsh-tool-skill` 只认「空白边界 + kebab-case」的 `/name` 手势，认到就
+  把该技能正文作为 instructions 注入本次请求，模型不必再调一次 `skill` 工具。用户当然可以
+  在发送前把它们删掉、改掉或再加几个。
+- **技能预检门禁 `skills.check`**：进入场景前（建工作区之后、激活之前）先问一次宿主：
+  这张卡绑的技能，哪些能真正被 `/name` 路由。结果分四类分别提示——
+  `missing`（本机没装）、`not-routable`（名字不是 kebab-case，永远路由不上）、
+  `command-clash`（和场景自身的 `/指令` 撞名，宿主会先按指令解析）、
+  `user-disabled`（`user-invocable: false`，只能模型自己调）。
+- **能装就直接装**：`missing` 里的技能按名字去「智能体中心」的技能市场找同名项，命中就调
+  `/api/runner-library/install` 装上，再回头复检一次（文件监听会让下一次请求就看见它）。
+  装不上（市场没有、没有登录态、被审查拒收）才弹窗拦住：`打开智能体中心安装` /
+  `仍然进入` / `取消`。
+- **配置项**：`skillRoutePrefill`（默认 `true`，关掉就退回 1.8.0 的纯模板预填）、
+  `autoInstallSkills`（默认 `true`，关掉就只提示不自动装）。
+
+### 变更
+
+- `activation.activate` / `activation.state` / `skills.check` 都接受 `cwd`：技能按该目录
+  的分层视图解析（项目级 `.dsh/skills` 会盖掉用户级同名技能），预检的结论才和会话里实际
+  能路由的结果一致。客户端传的是场景工作区目录。
+- `activation.activate` 与 `activation.state` 的返回里多了 `skillTokens`（可直接拼进输入框
+  的 token 串），`skills[]` 每项多了 `route` / `userInvocable` / `commandClash`。
+- 预填文本从「只有模板」变成「token 行 + 模板」。为此草稿比对不再按全文相等：
+  `isKnownTemplate` 会忽略开头的技能 token 行，宿主把草稿搬到新会话时也认得出这是我们
+  自己的模板；只是缺了 token 前缀的草稿不重写（重写会把光标弹到末尾）。
+- 从 `/场景指令` 进场景没有弹窗余地，所以在激活后直接提示「这些技能不会被当成 `/引用`」
+  （本机没装 / 名字不能写成 `/引用` / 与 `/指令` 同名 / 不可由用户调用）。
+- 注入块不再和技能手势打架：`/技能名` 已经随用户消息提交时，宿主会把技能正文注入本次
+  请求，块里的「用 skill 工具逐个按名称加载」改成「直接按正文执行，不要重复加载」——
+  否则同一个技能会被要求加载两遍（一遍模型自己调工具、一遍宿主注入）。
+  `preview.injection` 也按「token 在草稿里」这一前提预览。
+
+### 验证
+
+- `node --test`：186 个用例全绿（新增技能预检、token 拼装、草稿比对 8 个）；
+  `node scripts/check.mjs`：7 组自检通过。
+
 ## 1.8.0
 
 预设附件的生命周期收口，场景卡片统一视觉，业务系统随场景同步到 MCP。

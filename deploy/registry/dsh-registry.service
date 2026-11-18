@@ -1,0 +1,28 @@
+[Unit]
+Description=DSH plugin registry (Verdaccio) - company internal npm source
+Documentation=https://verdaccio.org/docs/configuration
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 专用系统用户：registry 只是存包，不需要任何特权。
+User=dsh-registry
+Group=dsh-registry
+WorkingDirectory=/data/dsh-plugins/registry
+Environment=NODE_ENV=production
+Environment=HOME=/data/dsh-plugins/registry
+# 用 env 解析 PATH：npm 全局装到 /usr/local/bin 或 /usr/bin 都能启动。
+ExecStart=/usr/bin/env verdaccio --config /data/dsh-plugins/registry/verdaccio.yaml
+Restart=on-failure
+RestartSec=3
+
+# 收紧权限：只允许写自己的数据目录。
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/data/dsh-plugins/registry
+
+[Install]
+WantedBy=multi-user.target

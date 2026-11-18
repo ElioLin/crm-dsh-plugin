@@ -1,0 +1,55 @@
+# Verdaccio —— 公司内部 DSH 插件源
+#
+# 放在 /data/dsh-plugins/registry/verdaccio.yaml，由 systemd 以专用用户的身份读取。
+# 只监听回环：外部一律经 nginx 的 /npm/ 子路径进来，不额外开端口。
+
+storage: /data/dsh-plugins/registry/storage
+plugins: /data/dsh-plugins/registry/plugins
+
+# 不设 url_prefix：registry 挂在独立端口 9001 的根路径上，tarball 地址由
+# Verdaccio 按请求的 Host 生成，天然就是 http://<host>:9001/...
+# （Verdaccio 6 的 url_prefix 只影响它拼地址、不改变路由，配了反而多出一段前缀 → 404）
+
+listen:
+  - 127.0.0.1:4873
+
+# 公司内部源：谁能访问服务器，谁就能发布。
+# max_users: -1 关掉自助注册（不需要账号体系），匿名即 $all。
+auth:
+  htpasswd:
+    file: /data/dsh-plugins/registry/htpasswd
+    max_users: -1
+
+# 公司包本地存；其它包（含我们的 peer）回源到国内镜像，避免走公网官方源。
+uplinks:
+  npmmirror:
+    url: https://registry.npmmirror.com/
+    timeout: 30s
+    max_fails: 3
+    fail_timeout: 60s
+
+packages:
+  # 公司 scope：匿名可读可发。
+  '@runner-corp/*':
+    access: $all
+    publish: $all
+    unpublish: $all
+
+  # 其它一律只读、回源；不允许往这里发公共包，避免把内部源当成公共源用。
+  '**':
+    access: $all
+    publish: $none
+    proxy: npmmirror
+
+middlewares:
+  audit:
+    enabled: false
+
+# 只留 warn 以上：正常发版不该刷屏，出问题能在 journalctl 里看到。
+log:
+  type: stdout
+  format: pretty
+  level: warn
+
+# pnpm 会并发拉元数据与 tarball，默认上限略紧。
+max_body_size: 50mb

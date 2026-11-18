@@ -256,6 +256,7 @@ async function makeApi(overrides = {}) {
     getSkills: overrides.getSkills ?? fakeSkills,
     getCurrentUser: overrides.getCurrentUser ?? (async () => '张三'),
     onChange: (type) => changes.push(type),
+    updater: overrides.updater,
   });
   return { api, store, config, changes, dataDir, assets, registry };
 }
@@ -1301,7 +1302,10 @@ test('新会话带入的客户端契约：场景引用、开场引导、预设�
   assert.ok(source.includes('seedComposer(ctx, sessionId, {'));
   assert.ok(source.includes('conversation?.input?.for?.(scope)'));
   // 预设附件与草稿一起进托盘（面板侧，不依赖 dock）。
-  assert.ok(source.includes('conversation.createDrafts(sessionId, files, false)'));
+  // 与手动拖拽/粘贴同一份语义：ordinary 决定图片是预上传还是随 prompt 内联。
+  assert.ok(source.includes('conversation.createDrafts(sessionId, files, ordinary)'));
+  assert.ok(source.includes("typeof ctx.sessions?.binding === 'function'"));
+  assert.ok(source.includes('sessionState.subagent === null'));
   assert.ok(source.includes('facade.addAttachments(ids)'));
   // 退出场景 / 移除最后一个场景 / 别处退出，三条路径都要把附件从托盘摘掉。
   assert.ok(source.includes('dropSeededAttachments(ctx, sessionId)'));
@@ -1514,4 +1518,176 @@ test('权限接口失败时默认拒绝标准场景管理', async () => {
   assert.equal(result.card.sourceType, 'LOCAL_CUSTOM');
   assert.ok(result.warnings === undefined || Array.isArray(result.warnings));
   assert.match(result.publish.message, /没有管理公司标准场景的权限/);
+});
+
+/* ── 1.9.0：/技能名 预检与预填 ─────────────────────────────────────── */
+
+function routedSkills(rows) {
+  return () => ({
+    async list() {
+      return rows;
+    },
+    async get(name) {
+      const row = rows.find((item) => item.name === name);
+      return row === undefined ? undefined : { ...row, content: `BODY-OF-${name}` };
+    },
+  });
+}
+
+const routeRows = [
+  { name: 'crm-core', description: 'CRM 通用运行指导', source: 'user-dsh', invocation: { modelInvocable: true } },
+  // 宿主的技能手势只认 kebab-case，这类名字永远路由不上。
+  { name: 'CRM Core Legacy', description: '大写带空格', source: 'user-dsh', invocation: { modelInvocable: true } },
+  // 和场景自身的 /record 指令同名：宿主的指令表先占整行，`/record` 会变成指令。
+  { name: 'record', description: '与场景指令同名', source: 'user-dsh', invocation: { modelInvocable: true } },
+  { name: 'silent-skill', description: '只能模型用', source: 'user-dsh', invocation: { modelInvocable: true, userInvocable: false } },
+];
+
+test('技能预检：只有真能被 /name 路由的技能才进预填，其余分类报出来', async () => {
+  const { api } = await makeApi({ getSkills: routedSkills(routeRows) });
+  await seedScenario(api); // 这张卡的 slashCommand 是 /record
+
+  const check = await api.checkSkills({
+    names: ['crm-core', 'CRM Core Legacy', 'record', 'silent-skill', 'nope', 'crm-core', ''],
+    cwd: '',
+  });
+  assert.equal(check.ok, true);
+  assert.equal(check.skillTokens, '/crm-core');
+  assert.deepEqual(check.missing, ['nope'], '本地没装 = missing');
+  assert.deepEqual(check.unroutable, ['CRM Core Legacy']);
+  assert.deepEqual(check.clashing, ['record']);
+  assert.deepEqual(check.disabled, ['silent-skill']);
+
+  // 每个条目都带足够客户端解释「为什么没进输入框」的信息。
+  const byName = new Map(check.skills.map((entry) => [entry.name, entry]));
+  assert.equal(byName.get('crm-core').route, 'ok');
+  assert.equal(byName.get('crm-core').userInvocable, true);
+  assert.equal(byName.get('CRM Core Legacy').routable, false);
+  assert.equal(byName.get('record').commandClash, true);
+  assert.equal(byName.get('silent-skill').userInvocable, false);
+});
+
+test('技能预检：空名单直接放行，不读技能仓库', async () => {
+  let listed = 0;
+  const { api } = await makeApi({
+    getSkills: () => ({
+      async list() {
+        listed += 1;
+        return routeRows;
+      },
+      async get() {
+        return undefined;
+      },
+    }),
+  });
+  const check = await api.checkSkills({ names: [], cwd: '' });
+  assert.equal(check.ok, true);
+  assert.equal(check.blocked, false);
+  assert.deepEqual(check.missing, []);
+  assert.equal(listed, 0);
+});
+
+test('激活时把可路由技能算成 /name token，状态接口也一起下发', async () => {
+  const { api } = await makeApi({ getSkills: routedSkills(routeRows) });
+  await seedScenario(api);
+  const activated = await api.activateScenario({ sessionId: 's1', scenarioId: 'crm_crm', cwd: '' });
+  assert.equal(activated.ok, true);
+  // 这张卡绑了 crm-core 与 crm-record-change，但只有前者在本地仓库里。
+  assert.equal(activated.skillTokens, '/crm-core');
+  assert.equal(activated.skills.find((entry) => entry.name === 'crm-record-change').missing, true);
+
+  const state = await api.activationState({ sessionId: 's1', cwd: '' });
+  assert.equal(state.draft.skillTokens, '/crm-core');
+  // welcome 与 text 的旧契约没变：输入框模板仍然是 inputDraft。
+  assert.equal(state.draft.source, 'welcomeMessage');
+});
+
+test('bootstrap 下发技能路由预填与自动安装两个开关', async () => {
+  const on = await makeApi();
+  assert.equal((await on.api.bootstrap({})).config.skillRoutePrefill, true);
+  assert.equal((await on.api.bootstrap({})).config.autoInstallSkills, true);
+
+  const off = await makeApi({ config: { skillRoutePrefill: false, autoInstallSkills: false } });
+  const boot = await off.api.bootstrap({});
+  assert.equal(boot.config.skillRoutePrefill, false);
+  assert.equal(boot.config.autoInstallSkills, false);
+});
+
+/* ── 插件自更新接口 ───────────────────────────────────────────── */
+
+test('宿主没有 pluginManager 时，更新接口返回可读原因而不是抛错', async () => {
+  const { api } = await makeApi();
+  const checked = await api.updateCheck({});
+  assert.equal(checked.ok, false);
+  assert.match(checked.message, /无法自动升级/);
+
+  const applied = await api.updateApply({});
+  assert.equal(applied.ok, false);
+  assert.match(applied.message, /手动升级/);
+
+  const status = await api.updateStatus({});
+  assert.equal(status.ok, false);
+  assert.equal(status.phase, 'idle');
+});
+
+test('更新接口把请求透传给 updater，bootstrap 只读缓存', async () => {
+  const calls = [];
+  const updater = {
+    cached: () => ({ current: '1.11.1', latest: '1.12.0', updateAvailable: true }),
+    check: async (options) => {
+      calls.push(['check', options]);
+      return { ok: true, current: '1.11.1', latest: '1.12.0', updateAvailable: true };
+    },
+    apply: async () => {
+      calls.push(['apply']);
+      return { ok: true, phase: 'installing', target: '1.12.0' };
+    },
+    status: () => ({ phase: 'done', message: '已升级' }),
+    skip: async (version) => {
+      calls.push(['skip', version]);
+      return { ok: true, skippedVersion: version };
+    },
+  };
+  const { api } = await makeApi({ updater });
+
+  const checked = await api.updateCheck({ force: true });
+  assert.equal(checked.ok, true);
+  assert.equal(checked.latest, '1.12.0');
+  assert.deepEqual(calls[0], ['check', { force: true }]);
+
+  const applied = await api.updateApply({});
+  assert.equal(applied.phase, 'installing');
+
+  const status = await api.updateStatus({});
+  assert.equal(status.ok, true);
+  assert.equal(status.phase, 'done');
+
+  const skipped = await api.updateSkip({ version: '1.12.0' });
+  assert.deepEqual(skipped, { ok: true, skippedVersion: '1.12.0' });
+
+  // bootstrap 每 5 秒轮询一次，只能读缓存，不能再打 registry
+  const boot = await api.bootstrap({});
+  assert.equal(boot.update.updateAvailable, true);
+});
+
+test('autoUpdateCheck 关闭后普通检查被拦，手动 force 仍放行', async () => {
+  const calls = [];
+  const updater = {
+    cached: () => undefined,
+    check: async (options) => {
+      calls.push(options);
+      return { ok: true, updateAvailable: false };
+    },
+    status: () => ({ phase: 'idle' }),
+  };
+  const { api } = await makeApi({ updater, config: { autoUpdateCheck: false } });
+
+  const auto = await api.updateCheck({});
+  assert.equal(auto.ok, false);
+  assert.equal(auto.disabled, true);
+  assert.equal(calls.length, 0);
+
+  const manual = await api.updateCheck({ force: true });
+  assert.equal(manual.ok, true);
+  assert.equal(calls.length, 1);
 });

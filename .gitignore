@@ -2,6 +2,8 @@
 node_modules/
 coverage/
 dist/
+build/
+*.tgz
 *.log
 
 # 本地环境 / 编辑器

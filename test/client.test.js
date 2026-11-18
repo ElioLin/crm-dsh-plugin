@@ -142,7 +142,168 @@ test('空白会话里留着别的场景模板时，换成这次场景的模板',
   assert.equal(pure.seedConflict('帮我建一张线索', '请你基于附件创建和编辑单据', templates), 'keep');
 });
 
-/* ── 1.7.0：业务系统 / 技能绑定 / 默认附件 ─────────────────────────── */
+/* ── 1.9.0：/技能名 预填 ─────────────────────────────────────────── */
+
+test('预填把技能 token 放在模板前面，长得跟用户自己引用技能一样', async () => {
+  const pure = await loadPure();
+  // 宿主算好的 token 串在前、模板在后：手势要求 token 后面是空白或行尾，换行满足它。
+  assert.equal(pure.composePrefillText('/crm-core /crm-data-analysis', '客户：'), '/crm-core /crm-data-analysis\n客户：');
+  // 没有技能 / 没有模板时都不要留空行。
+  assert.equal(pure.composePrefillText('', '客户：'), '客户：');
+  assert.equal(pure.composePrefillText('/crm-core', ''), '/crm-core');
+  assert.equal(pure.composePrefillText('', ''), '');
+  assert.equal(pure.composePrefillText(undefined, undefined), '');
+  // 只有 inputDraft 才进输入框；欢迎语仍然什么都不写。
+  assert.equal(
+    pure.seededDraftTextFor({ source: 'inputDraft', text: '客户：', skillTokens: '/crm-core' }),
+    '/crm-core\n客户：',
+  );
+  assert.equal(pure.seededDraftTextFor({ source: 'welcomeMessage', text: '要做什么？', skillTokens: '/crm-core' }), '');
+});
+
+test('去掉技能 token 行之后还是同一份模板，就不重写草稿', async () => {
+  const pure = await loadPure();
+  assert.equal(pure.stripSkillTokens('/crm-core /x\n客户：'), '客户：');
+  assert.equal(pure.stripSkillTokens('客户：'), '客户：');
+  // 只认「整行都是 /kebab-case」的行：正文里的斜杠不能被吃掉。
+  assert.equal(pure.stripSkillTokens('/usr/bin 与 5/8 都在正文里'), '/usr/bin 与 5/8 都在正文里');
+  assert.equal(pure.stripSkillTokens('/CRM core\n客户：'), '/CRM core\n客户：');
+  assert.equal(pure.stripSkillTokens(''), '');
+  // 只差 token 前缀时保持原样：重写会把用户的光标位置弄丢。
+  assert.equal(pure.seedConflict('/crm-core\n客户：', '客户：', new Set()), 'keep');
+  assert.equal(pure.seedConflict('/crm-core\n客户：', '/crm-core\n客户：', new Set()), 'keep');
+  // 配置默认开：只有显式 `false` 才退回纯模板预填。
+  assert.equal(pure.skillRoutePrefillEnabled({}), true);
+  assert.equal(pure.skillRoutePrefillEnabled({ skillRoutePrefill: true }), true);
+  assert.equal(pure.skillRoutePrefillEnabled({ skillRoutePrefill: false }), false);
+  assert.equal(pure.skillRoutePrefillEnabled(undefined), true);
+});
+
+test('被宿主搬过来的「/技能名 + 旧模板」仍然认成我们自己的模板', async () => {
+  const pure = await loadPure();
+  const templates = new Set(['/crm-core\n旧模板']);
+  assert.equal(pure.isKnownTemplate('/crm-core\n旧模板', templates), true);
+  assert.equal(pure.isKnownTemplate('用户自己打的字', templates), false);
+  // 宿主把草稿搬过来时可能只留下正文（token 被去掉），也必须认得出来。
+  assert.equal(pure.isKnownTemplate('旧模板', new Set(['旧模板'])), true);
+  assert.equal(pure.seedConflict('/crm-core\n旧模板', '/crm-record-change\n新模板', templates), 'replace');
+  assert.equal(pure.isKnownTemplate('', templates), false);
+});
+
+/* ── 1.11.1：预填一律纯文本，和手打同一条路 ───────────────────────── */
+
+test('预填载荷永远是纯字符串：宿主走 setDraft(text)，不进 restoreDraft', async () => {
+  const pure = await loadPure();
+  // 手打一段 `/crm-core` 进来，编辑器得到的就是普通文本节点 + lexicon 装饰（TextRefNode）。
+  // 传 { text, references } 则改走 restoreDraft()，插成 ReferenceChipNode —— 那是「进入场景」
+  // 独有的一种长相，用户手打永远得不到，同一个输入框于是出现两套样子。
+  assert.equal(
+    pure.draftPayloadFor('/crm-core /crm-record-change\n请你基于附件创建单据'),
+    '/crm-core /crm-record-change\n请你基于附件创建单据',
+  );
+  assert.equal(pure.draftPayloadFor('/crm-core\n客户：'), '/crm-core\n客户：');
+  assert.equal(pure.draftPayloadFor(''), '');
+  assert.equal(pure.draftPayloadFor(undefined), '');
+  // 引用源的名字仍在导出里：1.11.0 写进存档的草稿节点还指着它。
+  assert.equal(pure.SKILL_REF_SOURCE, 'crm-workspace-skill');
+});
+
+test('预填路径上不再出现 references / appearance，两个写入口都只递字符串', async () => {
+  const text = await source();
+  assert.doesNotMatch(text, /composeDraftPayload/);
+  assert.doesNotMatch(text, /appearance: 'file'/);
+  assert.match(text, /facade\.setDraft\(draftPayloadFor\(text\)\)/);
+  assert.match(text, /const payload = draftPayloadFor\(text\);/);
+});
+
+test('引用源退成宿主技能源的补充：只提供名字表与兜底打开', async () => {
+  const text = await source();
+  // 空候选：`/` 菜单里的技能列表由宿主自己的源出，空分组宿主不渲染。
+  assert.match(text, /candidates: \(\) => Promise\.resolve\(\[\]\)/);
+  assert.match(text, /showGroupTitle: false/);
+  assert.match(text, /onPick: \(pick\) =>/);
+  // 着色参与声明（lexicon）+ 点击兜底（skills.check 查路径再开右侧栏）。
+  assert.match(text, /lexicon: \(\) => \(catalog\.rows/);
+  assert.match(text, /openReference: \(session, reference\) => \{/);
+  assert.match(text, /await callHost\('skills\.check', \{ names: \[name\], cwd \}\)/);
+  assert.match(text, /openFileInSidebar\(ctx, sessionId, path\)/);
+  // 注册点在 apply 里，注销交给 ctx.effect。
+  assert.match(text, /inputTriggers\.registerSource\(createSkillRefSource\(cctx\)\)/);
+});
+
+test('codec 只留给 1.11.0 的存档草稿，免得升级后回车被拒收', async () => {
+  const text = await source();
+  assert.match(text, /codec: \{/);
+  assert.match(text, /clipboardText: \(ref\) => String\(ref \?\? ''\)/);
+  assert.match(text, /serialize: async \(ref\) => String\(ref \?\? ''\)/);
+});
+
+test('预设附件与手动拖拽同一份语义：普通会话才预上传图片', async () => {
+  const text = await source();
+  assert.match(text, /typeof ctx\.sessions\?\.binding === 'function'/);
+  assert.match(text, /sessionState\.subagent === null/);
+  assert.match(text, /createDrafts\(sessionId, files, ordinary\)/);
+});
+
+test('进入场景前先预检技能，缺的先自动装，装不上才拦住', async () => {
+  const text = await source();
+  // 预检走宿主接口（同源 /crm-workspace/api），不直接读本地目录。
+  assert.match(text, /callHost\('skills\.check', \{ names, cwd: dir \}\)/);
+  // 自动安装走「智能体中心」的同源路由，插件自己不碰 token。
+  assert.match(text, /fetch\(`\/api\/runner-library\/skills\?page=\$\{page\}`/);
+  assert.match(text, /fetch\('\/api\/runner-library\/install'/, '要能直接装技能市场里的同名技能');
+  // 装不上时给出三个出口：去装 / 仍然进入 / 取消。
+  assert.match(text, /function SkillGateDialog/);
+  assert.match(text, /打开智能体中心安装/);
+  assert.match(text, /仍然进入/);
+  // 「仍然进入」不能再次被拦。
+  assert.match(text, /skipSkillGate: true/);
+  // 拦在激活之前：不能在会话建好、场景激活之后才发现技能没装。
+  assert.ok(
+    text.indexOf('await verifyScenarioSkills(') < text.indexOf("callHost('activation.activate'", text.indexOf('const enterScenario')),
+    '技能预检要排在激活之前',
+  );
+  // 激活结果里的 token 必须拼进预填文本，否则输入框里只有一个光秃秃的模板。
+  assert.match(text, /composePrefillText\(\s*skillRoutePrefillEnabled\([^)]*\) === true \? result\?\.skillTokens : ''/);
+  // 关掉 skillRoutePrefill 就退回纯模板：token 与预检一起消失。
+  assert.match(text, /function skillRoutePrefillEnabled/);
+  assert.match(text, /options\.skipSkillGate !== true && skillRoutePrefillEnabled\(/);
+  // /指令 路径没有弹窗余地：绑定技能不生效时要当场说出来，不能悄悄当成用上了。
+  assert.match(text, /function routeLabel\(route\)/);
+  assert.match(text, /这些技能不会被当成 \/引用：\$\{lines\}/);
+});
+
+test('场景栏的技能名能拼出右侧栏地址，点一下就能打开 SKILL.md', async () => {
+  const pure = await loadPure();
+  // 会话工作目录内的文件走 session 形式（相对路径更稳），盘符与斜杠都规范化。
+  assert.equal(
+    pure.fileAddressFor('session-1', 'D:\\dsh\\home\\crm-workspace\\workspaces\\crm', 'D:\\dsh\\home\\crm-workspace\\workspaces\\crm\\skills\\crm-core\\SKILL.md'),
+    'dsh-resource://file/session/session-1/skills/crm-core/SKILL.md',
+  );
+  // 不在工作目录里时退回 absolute 形式：盘符的冒号必须保留，否则打不开。
+  assert.equal(
+    pure.fileAddressFor('session-1', 'D:\\crm', 'D:\\dsh\\home\\skills\\crm-core\\SKILL.md'),
+    'dsh-resource://file/absolute/D:/dsh/home/skills/crm-core/SKILL.md',
+  );
+  // 每段都转义（空格、中文都不例外），盘符的 `:` 例外。
+  assert.equal(pure.encodeAddressSegment('C:'), 'C:');
+  assert.equal(pure.encodeAddressSegment('a b'), 'a%20b');
+  assert.equal(pure.fileAddressFor('session-1', '', ''), '');
+
+  const text = await source();
+  // 场景栏把技能名渲染成可点 chip，点击走右侧栏资源地址。
+  assert.match(text, /const routeSkills = \(Array\.isArray\(seed\?\.skills\)/);
+  assert.match(text, /function openSkillFile\(ctx, sessionId, skill\)/);
+  assert.match(text, /crmw-pill-skills/);
+  assert.match(text, /sidebar\.openResource\(address\)/);
+  // 没有路径信息时退回纯文字提示，不给出「点了没反应」的假按钮。
+  assert.match(text, /没有可打开的文件路径/);
+  // host 侧要把 path 下发给客户端，chip 才有落点。
+  const api = await readFile(new URL('../lib/core/api.js', import.meta.url), 'utf8');
+  assert.match(api, /path: text\(summary\?\.path\) \|\| text\(definition\?\.path\)/);
+  assert.match(api, /skills: routeInfo\.skills/);
+});
+
 
 /** 读源码做契约断言：这些规则写在组件里，没法单独 import 出来测。 */
 async function source() {
@@ -210,7 +371,7 @@ test('跨业务系统的场景不能叠加进同一段会话', async () => {
   assert.match(text, /liveStack\.some\(\(item\) => item\.scenarioId === card\.scenarioId\)/);
   assert.ok(text.includes('已经在当前对话里了'), '重复叠加要给出提示');
   // 守卫必须看宿主上的真实栈：面板里的 activation 可能是上一轮轮询的旧值。
-  assert.ok(text.includes("callHost('activation.state', { sessionId: stackSession })"), '要读真实栈再判断');
+  assert.match(text, /callHost\('activation\.state', \{[\s\S]{0,120}sessionId: stackSession/, '要读真实栈再判断');
 });
 
 test('/指令 进入场景时也会带上预填与预设附件', async () => {
