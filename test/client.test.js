@@ -93,10 +93,10 @@ test('预填文本只取填写模板，绝不带 /场景标题 假指令', async
   assert.ok(!pure.prefillTextFor({ title: 'CRM', inputDraft: '正文' }).includes('/CRM'));
 });
 
-test('只有 inputDraft 才进输入框，欢迎语不进', async () => {
+test('只有 inputDraft 才进输入框，场景介绍不进', async () => {
   const pure = await loadPure();
   assert.equal(pure.seededDraftTextFor({ source: 'inputDraft', text: ' 订单号： ' }), '订单号：');
-  assert.equal(pure.seededDraftTextFor({ source: 'welcomeMessage', text: '请描述你要新建的单据。' }), '');
+  assert.equal(pure.seededDraftTextFor({ source: 'description', text: '请描述你要新建的单据。' }), '');
   assert.equal(pure.seededDraftTextFor(null), '');
   assert.equal(pure.seededDraftTextFor(undefined), '');
 });
@@ -153,12 +153,12 @@ test('预填把技能 token 放在模板前面，长得跟用户自己引用技�
   assert.equal(pure.composePrefillText('/crm-core', ''), '/crm-core');
   assert.equal(pure.composePrefillText('', ''), '');
   assert.equal(pure.composePrefillText(undefined, undefined), '');
-  // 只有 inputDraft 才进输入框；欢迎语仍然什么都不写。
+  // 只有 inputDraft 才进输入框；场景介绍仍然什么都不写。
   assert.equal(
     pure.seededDraftTextFor({ source: 'inputDraft', text: '客户：', skillTokens: '/crm-core' }),
     '/crm-core\n客户：',
   );
-  assert.equal(pure.seededDraftTextFor({ source: 'welcomeMessage', text: '要做什么？', skillTokens: '/crm-core' }), '');
+  assert.equal(pure.seededDraftTextFor({ source: 'description', text: '要做什么？', skillTokens: '/crm-core' }), '');
 });
 
 test('去掉技能 token 行之后还是同一份模板，就不重写草稿', async () => {

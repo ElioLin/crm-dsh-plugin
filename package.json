@@ -1,6 +1,6 @@
 {
   "name": "@runner-corp/dsh-scenario-workspace",
-  "version": "1.12.0",
+  "version": "1.13.0",
   "description": "场景工作台：动态场景容器 + 显式 Skill 组装器 + MCP 标准场景协同（DSH Web 插件）",
   "type": "module",
   "main": "lib/index.js",

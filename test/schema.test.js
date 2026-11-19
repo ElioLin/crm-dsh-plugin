@@ -25,7 +25,7 @@ const base = {
     formContextEntry: 'STANDARD',
     allowAttachments: true,
   },
-  welcomeMessage: '请描述你要新建的单据类型与关键信息，我会先核对必填字段。',
+  inputDraft: '请描述你要新建的单据类型与关键信息，我会先核对必填字段。',
 };
 
 test('合法配置被接受，并补全默认值', () => {
@@ -38,22 +38,49 @@ test('合法配置被接受，并补全默认值', () => {
   assert.equal(result.warnings.length, 0);
 });
 
-test('缺少场景介绍必须报错（该字段是卡片正文）', () => {
+test('场景介绍是选填：留空也能保存（1.13.0 起与原「开场引导语」合并）', () => {
   const result = normalizeScenario({ ...base, description: '   ' }, { existing: [] });
-  assert.equal(result.ok, false);
-  assert.ok(result.errors.some((error) => error.field === 'description'));
+  assert.equal(result.ok, true);
+  assert.equal(result.card.description, '');
+  assert.equal(result.card.inputDraft, base.inputDraft);
 });
 
-test('缺少标题/业务系统/指令/开场语都会逐项报错', () => {
+test('缺少标题/业务系统/指令/输入框预填都会逐项报错', () => {
   const result = normalizeScenario(
-    { ...base, title: '', businessSystem: '', slashCommand: '', welcomeMessage: '' },
+    { ...base, title: '', businessSystem: '', slashCommand: '', inputDraft: '  ' },
     { existing: [] },
   );
   assert.equal(result.ok, false);
   const fields = result.errors.map((error) => error.field);
-  for (const field of ['title', 'businessSystem', 'slashCommand', 'welcomeMessage']) {
+  for (const field of ['title', 'businessSystem', 'slashCommand', 'inputDraft']) {
     assert.ok(fields.includes(field), `应报告 ${field}`);
   }
+});
+
+test('老存档迁移：welcomeMessage 并入场景介绍与输入框预填，不再回吐该字段', () => {
+  const legacy = {
+    ...base,
+    description: '',
+    inputDraft: '',
+    welcomeMessage: '线上「拜访记录」场景：先问客户，再落库。',
+  };
+  const migrated = coerceStoredScenario(legacy, { existing: [] });
+  assert.ok(migrated);
+  assert.equal(migrated.description, '线上「拜访记录」场景：先问客户，再落库。');
+  assert.equal(migrated.inputDraft, '线上「拜访记录」场景：先问客户，再落库。');
+  assert.equal('welcomeMessage' in migrated, false);
+});
+
+test('老存档已有场景介绍时：预填只继承旧开场引导语，不覆盖已写的场景介绍', () => {
+  const legacy = {
+    ...base,
+    inputDraft: '',
+    welcomeMessage: '请先说明要处理的单据。',
+  };
+  const migrated = coerceStoredScenario(legacy, { existing: [] });
+  assert.ok(migrated);
+  assert.equal(migrated.description, base.description);
+  assert.equal(migrated.inputDraft, '请先说明要处理的单据。');
 });
 
 test('业务分类是选填：留空也能保存，只是不再当筛选维度', () => {
@@ -223,7 +250,7 @@ test('场景预设附件被规范化：角色固定、MIME 兜底、顺序保留
   assert.equal(result.card.presetAttachments[0].role, 'SCENARIO_PRESET');
   assert.equal(result.card.presetAttachments[0].mimeType, attachment.mimeType);
   assert.equal(result.card.presetAttachments[1].mimeType, 'text/csv');
-  assert.equal(result.card.inputDraft, '');
+  assert.equal(result.card.inputDraft, base.inputDraft);
   assert.equal(result.card.sourceType, 'LOCAL_CUSTOM');
   assert.equal(result.card.readonlyForNormalUser, false);
   assert.equal(result.card.version, '1.0.0');

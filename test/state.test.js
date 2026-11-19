@@ -22,7 +22,7 @@ const card = {
   enabled: true,
   pinnedSkills: ['crm-core'],
   prePinnedContext: { defaultAction: 'CREATE', formContextEntry: 'STANDARD', allowAttachments: true },
-  welcomeMessage: '请描述你要新建的单据。',
+  inputDraft: '请描述你要新建的单据。',
 };
 
 test('首次启动生成空存档，写入后可以被新实例读回', async () => {

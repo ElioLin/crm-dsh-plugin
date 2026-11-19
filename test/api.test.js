@@ -30,7 +30,7 @@ const baseDraft = {
     formContextEntry: 'STANDARD',
     allowAttachments: true,
   },
-  welcomeMessage: '请描述你要新建的单据。',
+  inputDraft: '请描述你要新建的单据。',
 };
 
 const skillRows = [
@@ -287,9 +287,10 @@ test('新建场景后 bootstrap 能读到，并带上分类/图标等词表', as
 
 test('校验失败时返回字段级错误，且不写入存档', async () => {
   const { api, store, changes } = await makeApi();
-  const result = await api.saveScenario({ draft: { ...baseDraft, description: '' } });
+  // 1.13.0 起必填项换成了输入框预填内容（场景介绍改选填）。
+  const result = await api.saveScenario({ draft: { ...baseDraft, inputDraft: '  ' } });
   assert.equal(result.ok, false);
-  assert.ok(result.errors.some((error) => error.field === 'description'));
+  assert.ok(result.errors.some((error) => error.field === 'inputDraft'));
   assert.deepEqual(store.scenarios(), []);
   assert.deepEqual(changes, []);
 });
@@ -803,7 +804,6 @@ test('toRemoteWritePayload 产出嵌套 scenarioPayload，且绝不携带 versio
     updatedAt: 'y',
     presetAttachments: [{ attachmentId: 'att_a' }],
     pinnedSkills: ['crm-core'],
-    welcomeMessage: '欢迎',
     inputDraft: '草稿',
     prePinnedContext: { defaultAction: 'CREATE', formContextEntry: 'STANDARD', allowAttachments: true },
     scenarioPayload: {
@@ -1202,7 +1202,7 @@ test('saveAttachment 拒绝不支持的类型与空内容', async () => {
   assert.match(empty.message, /附件内容为空/);
 });
 
-test('activationState 返回输入框预填契约：inputDraft 优先，回退 welcomeMessage', async () => {
+test('activationState 返回输入框预填契约：inputDraft 必填，场景介绍单独下发', async () => {
   const { api } = await makeApi();
   const withDraft = await api.saveScenario({
     draft: { ...baseDraft, inputDraft: '拜访对象：\n拜访目的：' },
@@ -1215,21 +1215,27 @@ test('activationState 返回输入框预填契约：inputDraft 优先，回退 w
   assert.equal(state.draft.source, 'inputDraft');
   // 场景引用标记：输入框第一行显示 `/场景名称`。
   assert.equal(state.draft.reference, '/CRM 单据新建与修改');
-  // 开场引导语单独下发：客户端把它渲染成新会话里的「场景开场」卡片。
-  assert.equal(state.draft.welcome, baseDraft.welcomeMessage);
+  // 1.13.0 起「开场引导语」并入场景介绍：welcome 就是场景介绍投影。
+  assert.equal(state.draft.welcome, baseDraft.description);
   assert.deepEqual(state.draft.attachments, []);
   assert.equal(state.scenario.version, '1.0.0');
 
-  const fallback = await api.saveScenario({
+  // 输入框预填改必填：留空保存会被字段级校验拦住，而不是静默生成一张空模板。
+  const empty = await api.saveScenario({
     draft: { ...baseDraft, title: '无预填场景', slashCommand: '/fallback', inputDraft: '' },
   });
-  assert.equal(fallback.ok, true, JSON.stringify(fallback));
-  await api.activateScenario({ sessionId: 's-2', scenarioId: fallback.card.scenarioId });
-  const fallbackState = await api.activationState({ sessionId: 's-2' });
-  assert.equal(fallbackState.draft.text, baseDraft.welcomeMessage);
-  assert.equal(fallbackState.draft.source, 'welcomeMessage');
-  assert.equal(fallbackState.draft.reference, '/无预填场景');
-  assert.equal(fallbackState.draft.welcome, baseDraft.welcomeMessage);
+  assert.equal(empty.ok, false);
+  assert.ok(empty.errors.some((error) => error.field === 'inputDraft'), JSON.stringify(empty.errors));
+
+  // 场景介绍是选填：留空时 welcome 为空串，客户端就不渲染「场景开场」卡片。
+  const noDesc = await api.saveScenario({
+    draft: { ...baseDraft, title: '无介绍场景', slashCommand: '/nodesc', description: '' },
+  });
+  assert.equal(noDesc.ok, true, JSON.stringify(noDesc));
+  await api.activateScenario({ sessionId: 's-2', scenarioId: noDesc.card.scenarioId });
+  const noDescState = await api.activationState({ sessionId: 's-2' });
+  assert.equal(noDescState.draft.welcome, '');
+  assert.equal(noDescState.draft.source, 'inputDraft');
 });
 
 test('activationState 把预设附件转成可拉取的下载地址', async () => {
@@ -1598,8 +1604,8 @@ test('激活时把可路由技能算成 /name token，状态接口也一起下�
 
   const state = await api.activationState({ sessionId: 's1', cwd: '' });
   assert.equal(state.draft.skillTokens, '/crm-core');
-  // welcome 与 text 的旧契约没变：输入框模板仍然是 inputDraft。
-  assert.equal(state.draft.source, 'welcomeMessage');
+  // welcome 与 text 的契约：输入框模板始终是必填的 inputDraft。
+  assert.equal(state.draft.source, 'inputDraft');
 });
 
 test('bootstrap 下发技能路由预填与自动安装两个开关', async () => {

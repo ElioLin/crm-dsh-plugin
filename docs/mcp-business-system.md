@@ -24,7 +24,6 @@
 ```js
 const scenarioPayload = {
   pinnedSkills: [...],
-  welcomeMessage: '',
   inputDraft: '',
   prePinnedContext: {...},
   sourceType: 'COMPANY_STANDARD',
@@ -33,6 +32,10 @@ const scenarioPayload = {
   icon: 'workflow',
 };
 ```
+
+> 1.13.0 起「开场引导语」并入顶层 `description`（场景介绍），`scenarioPayload` 里不再有
+> `welcomeMessage`。服务端只是存储、不校验这两个键，所以旧的 `scenarioPayload.welcomeMessage`
+> 依旧读得回来（仅在 `description` 缺失时作为兜底），新的写请求不再产生它。
 
 原因在控制平面的契约里：
 

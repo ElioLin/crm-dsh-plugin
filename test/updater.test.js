@@ -333,3 +333,58 @@ test('没有新版本 / 检查失败时 apply 拒绝启动安装', async () => {
   assert.equal(failed.ok, false);
   assert.equal(called, false);
 });
+
+test('scoped 包优先用它自己 scope 配的源，而不是全局 registry', async () => {
+  const dir = await tempDir();
+  await writeFile(
+    join(dir, '.npmrc'),
+    ['registry=https://registry.npmjs.org/', '@runner-corp:registry=http://192.168.156.203:9001/'].join('\n'),
+    'utf8',
+  );
+
+  const scoped = resolveRegistry({ name: '@runner-corp/dsh-scenario-workspace', profileDir: dir, env: {} });
+  assert.equal(scoped.registry, 'http://192.168.156.203:9001/');
+  assert.equal(scoped.source, 'private');
+
+  // 别的 scope、无 scope 的包仍走全局源
+  assert.equal(resolveRegistry({ name: '@other/pkg', profileDir: dir, env: {} }).registry, 'https://registry.npmjs.org/');
+  assert.equal(resolveRegistry({ name: 'plain-pkg', profileDir: dir, env: {} }).registry, 'https://registry.npmjs.org/');
+
+  // 显式配置仍是最高的优先级
+  assert.equal(
+    resolveRegistry({
+      configured: 'https://explicit.example/',
+      name: '@runner-corp/x',
+      profileDir: dir,
+      env: {},
+    }).registry,
+    'https://explicit.example/',
+  );
+});
+
+test('真实形态：全局源仍是官方、只配了 scope 时，更新检查要打到私有源', async () => {
+  const dir = await tempDir();
+  await writeFile(
+    join(dir, '.npmrc'),
+    ['registry=https://registry.npmjs.org/', '@runner-corp:registry=http://192.168.156.203:9001/'].join('\n'),
+    'utf8',
+  );
+
+  const calls = [];
+  const updater = makeUpdater({
+    registry: '',
+    profileDir: dir,
+    homeDir: '',
+    fetch: async (url) => {
+      calls.push(url);
+      return { ok: true, status: 200, json: async () => ({ version: '1.12.1' }) };
+    },
+  });
+
+  const result = await updater.check();
+  assert.deepEqual(calls, ['http://192.168.156.203:9001/@runner-corp%2fdsh-scenario-workspace/latest']);
+  assert.equal(result.ok, true);
+  assert.equal(result.latest, '1.12.1');
+  assert.equal(result.updateAvailable, true);
+  assert.equal(result.registry, 'http://192.168.156.203:9001/');
+});

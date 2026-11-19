@@ -20,7 +20,6 @@ const card = {
     formContextEntry: 'QUICK_ACTION',
     allowAttachments: true,
   },
-  welcomeMessage: '请描述你要新建的单据。',
 };
 
 const skills = [
@@ -92,6 +91,12 @@ test('预设填写模板：随消息提交时说明「不要复述」，未提�
   assert.ok(absent.includes('没有把它一起发出来'));
   // 没有 inputDraft 的卡片不该出现这一节。
   assert.ok(!buildContextBlock({ card, skills }).includes('## 输入框预填模板'));
+});
+
+test('场景介绍选填：留空时不留空的「场景说明」标题，也不影响其他段落', () => {
+  const text = buildContextBlock({ card: { ...card, description: '' }, skills });
+  assert.ok(!text.includes('## 场景说明（管理员填写）'));
+  assert.ok(text.includes('crm-core'));
 });
 
 test('多场景叠加时说明本块只描述其中一个', () => {

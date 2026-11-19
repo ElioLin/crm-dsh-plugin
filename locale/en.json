@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Scenario Workspace",
-    "description": "A dynamic scenario container organised by business system: administrators define scenario cards by schema (title, business system, category, icon, slash command, pinnedSkills, attachment toggle, welcome message, composer prefill). Clicking a card activates its pinnedSkills stack in order and injects the scenario context into the current session, so the model never has to blindly route across a global skill catalogue. Entering a scenario first lands in the workspace that belongs to its business system (created on demand); stacking a scenario switches to the target workspace first as well."
+    "description": "A dynamic scenario container organised by business system: administrators define scenario cards by schema (title, business system, category, icon, slash command, pinnedSkills, attachment toggle, scenario description, composer prefill). Clicking a card activates its pinnedSkills stack in order and injects the scenario context into the current session, so the model never has to blindly route across a global skill catalogue. Entering a scenario first lands in the workspace that belongs to its business system (created on demand); stacking a scenario switches to the target workspace first as well."
   }
 }
