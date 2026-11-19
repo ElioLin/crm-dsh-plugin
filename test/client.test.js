@@ -101,6 +101,40 @@ test('只有 inputDraft 才进输入框，场景介绍不进', async () => {
   assert.equal(pure.seededDraftTextFor(undefined), '');
 });
 
+test('卡片上的预填首行：取模板第一行压成单行，空模板不显示', async () => {
+  const pure = await loadPure();
+  assert.equal(pure.draftFirstLine(''), '');
+  assert.equal(pure.draftFirstLine('   '), '');
+  assert.equal(pure.draftFirstLine(undefined), '');
+  assert.equal(pure.draftFirstLine('订单号：'), '订单号：');
+  // 模板常常以空行开头，不能因此显示成空白。
+  assert.equal(pure.draftFirstLine('\n\n订单号：   \n客户：'), '订单号：');
+  // 第一行内部的连续空白压成一个空格：卡片只有一行高度，多了会被裁掉。
+  assert.equal(pure.draftFirstLine('订单号：\t  ABC  \n客户：'), '订单号： ABC');
+});
+
+test('两个页签共用的搜索口径：标题、介绍、预填、业务系统、技能都能命中', async () => {
+  const pure = await loadPure();
+  const card = {
+    title: 'CRM单据新建',
+    description: '按描述补齐必填字段',
+    inputDraft: '订单号：',
+    businessSystem: 'CRM',
+    category: '单据',
+    slashCommand: '/crm-new',
+    pinnedSkills: ['sf-query'],
+  };
+  assert.equal(
+    pure.scenarioSearchText(card),
+    'crm单据新建 按描述补齐必填字段 订单号： crm 单据 /crm-new sf-query',
+  );
+  // 缺字段时不能拼出 'undefined' 字面量（否则搜 "undef" 会命中所有空卡片）。
+  assert.equal(pure.scenarioSearchText({ title: 'A' }), 'a');
+  // 业务系统也进搜索：搜 tapd 能命中 TAPD 场景。
+  assert.ok(pure.scenarioSearchText({ title: '需求', businessSystem: 'TAPD' }).includes('tapd'));
+  assert.equal(pure.scenarioSearchText(undefined), '');
+});
+
 test('退出场景只在内容仍等于预填文本时清空输入框', async () => {
   const pure = await loadPure();
   assert.equal(pure.shouldClearSeededDraft('订单号：\n客户：', '订单号：\n客户：'), true);
